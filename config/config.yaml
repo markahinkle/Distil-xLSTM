@@ -1,0 +1,38 @@
+training:
+  num_epochs: 1
+  steps_per_epoch: 2
+  batch_size: 1
+  gradient_accumulation_steps: 1
+  max_grad_norm: 1.0
+  mixed_precision: true
+  max_length: 256
+  num_workers: 0
+  dataset:
+    dataset_name: HuggingFaceFW/fineweb
+    subset: sample-10BT
+    split: train
+    shuffle_buffer_size: 10000
+    seed: 42
+    take: 200
+  optimizer:
+    learning_rate: 0.0002
+    weight_decay: 0.01
+  scheduler:
+    warmup_ratio: 0.1
+    cosine_min_lr: 0.000001
+  checkpoint:
+    output_dir: checkpoints
+    save_every: 500
+    keep_last: 5
+  logging:
+    log_every: 50
+    tensorboard_dir: runs/distil_xlstm
+loss:
+  alpha_initial: 0.8
+  alpha_final: 0.5
+  temperature_initial: 2.0
+  temperature_final: 1.0
+  delta_alpha: 0.05
+  delta_temperature: 0.05
+  beta: 0.1
+  normalize_hidden: true

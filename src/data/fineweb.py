@@ -6,7 +6,9 @@ import logging
 from dataclasses import dataclass
 from typing import Iterable, Iterator, Optional
 
+import torch
 from datasets import IterableDataset, load_dataset
+from torch.utils.data import DataLoader, IterableDataset as TorchIterableDataset
 from transformers import PreTrainedTokenizerBase
 
 LOGGER = logging.getLogger(__name__)
@@ -80,4 +82,89 @@ def tokenize_texts(
         max_length=max_length,
         padding=padding,
         return_tensors="pt",
+    )
+
+
+class TokenizedFineWebIterable(TorchIterableDataset):
+    """Torch IterableDataset that streams tokenized FineWeb batches."""
+
+    def __init__(
+        self,
+        dataset: IterableDataset,
+        tokenizer: PreTrainedTokenizerBase,
+        *,
+        batch_size: int,
+        max_length: int,
+    ) -> None:
+        super().__init__()
+        self.dataset = dataset
+        self.tokenizer = tokenizer
+        self.batch_size = batch_size
+        self.max_length = max_length
+
+        if self.tokenizer.pad_token is None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
+
+    def __iter__(self) -> Iterator[dict[str, torch.Tensor]]:
+        import torch
+
+        buffer: list[str] = []
+        for example in self.dataset:
+            text = example.get("text")
+            if not text:
+                continue
+            buffer.append(text)
+            if len(buffer) >= self.batch_size:
+                tokens = self._tokenize(buffer)
+                buffer.clear()
+                yield tokens
+
+        if buffer:
+            yield self._tokenize(buffer)
+
+    def _tokenize(self, texts: list[str]) -> dict[str, torch.Tensor]:
+        import torch
+
+        encoded = self.tokenizer(
+            texts,
+            truncation=True,
+            max_length=self.max_length,
+            padding="max_length",
+            return_tensors="pt",
+        )
+
+        input_ids = encoded["input_ids"].long()
+        attention_mask = encoded.get("attention_mask")
+        if attention_mask is None:
+            attention_mask = torch.ones_like(input_ids)
+
+        batch = {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "labels": input_ids.clone(),
+        }
+        return batch
+
+
+def build_tokenized_dataloader(
+    dataset: IterableDataset,
+    tokenizer: PreTrainedTokenizerBase,
+    *,
+    batch_size: int,
+    max_length: int,
+    num_workers: int = 0,
+) -> DataLoader:
+    """Wrap the streaming dataset in a PyTorch DataLoader that yields token batches."""
+
+    iterable = TokenizedFineWebIterable(
+        dataset,
+        tokenizer,
+        batch_size=batch_size,
+        max_length=max_length,
+    )
+
+    return DataLoader(
+        iterable,
+        batch_size=None,
+        num_workers=num_workers,
     )
