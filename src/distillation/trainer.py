@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict
 from pathlib import Path
 from typing import Optional
 
@@ -15,50 +15,24 @@ from torch.utils.tensorboard import SummaryWriter
 from transformers.optimization import get_cosine_schedule_with_warmup
 
 from src.data import FineWebStreamConfig, build_tokenized_dataloader, load_fineweb_stream
-from src.distillation.loss import DeltaDistillationConfig, DeltaDistillationLoss
+from src.distillation.configs import (
+    CheckpointConfig,
+    LoggingConfig,
+    OptimizerConfig,
+    SchedulerConfig,
+    TrainingConfig,
+)
+from src.distillation.loss import (
+    DeltaDistillationConfig,
+    DeltaDistillationLoss,
+    DistillationLossOutput,
+)
 from src.models import DistilXLSTMStudent, TeacherResources
+from src.utils.metrics import MetricsLogger, collect_device_memory, to_float
 
+import logging
 
-@dataclass
-class OptimizerConfig:
-    learning_rate: float = 2e-4
-    weight_decay: float = 0.01
-
-
-@dataclass
-class SchedulerConfig:
-    warmup_ratio: float = 0.1
-    cosine_min_lr: float = 1e-6
-
-
-@dataclass
-class CheckpointConfig:
-    output_dir: Path = Path("checkpoints")
-    save_every: int = 500
-    keep_last: int = 5
-
-
-@dataclass
-class LoggingConfig:
-    log_every: int = 50
-    tensorboard_dir: Optional[Path] = Path("runs/distil_xlstm")
-
-
-@dataclass
-class TrainingConfig:
-    num_epochs: int = 1
-    steps_per_epoch: int = 100
-    batch_size: int = 2
-    gradient_accumulation_steps: int = 4
-    max_grad_norm: float = 1.0
-    mixed_precision: bool = True
-    max_length: int = 512
-    num_workers: int = 0
-    dataset: FineWebStreamConfig = field(default_factory=FineWebStreamConfig)
-    optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
-    scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
-    checkpoint: CheckpointConfig = field(default_factory=CheckpointConfig)
-    logging: LoggingConfig = field(default_factory=LoggingConfig)
+LOGGER = logging.getLogger(__name__)
 
 
 class DistillationTrainer:
@@ -86,8 +60,13 @@ class DistillationTrainer:
         if train_config.logging.tensorboard_dir is not None:
             self.writer = SummaryWriter(str(train_config.logging.tensorboard_dir))
 
+        self.metrics_logger: Optional[MetricsLogger] = None
+        if train_config.logging.metrics_path is not None:
+            self.metrics_logger = MetricsLogger(Path(train_config.logging.metrics_path))
+
+        self.trainable_params = [p for p in student.parameters() if p.requires_grad]
         self.optimizer = torch.optim.AdamW(
-            (p for p in student.parameters() if p.requires_grad),
+            self.trainable_params,
             lr=train_config.optimizer.learning_rate,
             weight_decay=train_config.optimizer.weight_decay,
         )
@@ -130,47 +109,76 @@ class DistillationTrainer:
         accumulation = self.train_config.gradient_accumulation_steps
         log_every = self.train_config.logging.log_every
 
-        for epoch in range(self.train_config.num_epochs):
-            for step, batch in enumerate(dataloader):
-                if step >= self.train_config.steps_per_epoch:
-                    break
+        try:
+            for epoch in range(self.train_config.num_epochs):
+                LOGGER.info(
+                    "Starting epoch %d/%d",
+                    epoch + 1,
+                    self.train_config.num_epochs,
+                )
+                for step, batch in enumerate(dataloader):
+                    if step >= self.train_config.steps_per_epoch:
+                        break
 
-                input_ids = batch["input_ids"].to(self.device)
-                attention_mask = batch["attention_mask"].to(self.device)
-                labels = batch["labels"].to(self.device)
-
-                loss = self._training_step(input_ids, attention_mask, labels, accumulation)
-
-                update_step = (self.global_step + 1) % accumulation == 0
-
-                if update_step:
-                    torch.nn.utils.clip_grad_norm_(
-                        (p for p in self.student.parameters() if p.requires_grad),
-                        self.train_config.max_grad_norm,
+                    LOGGER.info(
+                        "Epoch %d Step %d/%d (global step %d)",
+                        epoch + 1,
+                        step + 1,
+                        self.train_config.steps_per_epoch,
+                        self.global_step,
                     )
-                    self._optimizer_step()
 
-                if self.global_step % log_every == 0:
-                    self._log_metrics(loss)
+                    input_ids = batch["input_ids"].to(self.device)
+                    attention_mask = batch["attention_mask"].to(self.device)
+                    labels = batch["labels"].to(self.device)
 
-                if (
-                    self.enable_checkpointing
-                    and self.train_config.checkpoint.save_every > 0
-                    and self.global_step % self.train_config.checkpoint.save_every == 0
-                    and self.global_step > 0
-                ):
+                    distill_output = self._training_step(input_ids, attention_mask, labels, accumulation)
+
+                    update_step = (self.global_step + 1) % accumulation == 0
+                    grad_norm = None
+                    if update_step:
+                        grad_norm = torch.nn.utils.clip_grad_norm_(
+                            self.trainable_params,
+                            self.train_config.max_grad_norm,
+                        )
+                        self._optimizer_step()
+
+                    gpu_mem = collect_device_memory(self.device)
+                    metrics_payload = self._prepare_metrics(distill_output, grad_norm, gpu_mem)
+
+                    if self.metrics_logger:
+                        self.metrics_logger.log(self.global_step, metrics_payload)
+
+                    self._record_tensorboard(self.global_step, metrics_payload)
+                    if self.global_step % log_every == 0:
+                        self._print_metrics(self.global_step, metrics_payload)
+
+                    if (
+                        self.enable_checkpointing
+                        and self.train_config.checkpoint.save_every > 0
+                        and self.global_step % self.train_config.checkpoint.save_every == 0
+                        and self.global_step > 0
+                    ):
+                        self._save_checkpoint(epoch)
+
+                    self.global_step += 1
+
+                self.loss_fn.epoch_update()
+                if self.enable_checkpointing:
                     self._save_checkpoint(epoch)
+        finally:
+            if self.writer:
+                self.writer.close()
+            if self.metrics_logger:
+                self.metrics_logger.close()
 
-                self.global_step += 1
-
-            self.loss_fn.epoch_update()
-            if self.enable_checkpointing:
-                self._save_checkpoint(epoch)
-
-        if self.writer:
-            self.writer.close()
-
-    def _training_step(self, input_ids, attention_mask, labels, accumulation) -> torch.Tensor:
+    def _training_step(
+        self,
+        input_ids,
+        attention_mask,
+        labels,
+        accumulation,
+    ) -> DistillationLossOutput:
         self.student.train()
         self.teacher.model.eval()
 
@@ -203,7 +211,7 @@ class DistillationTrainer:
         else:
             loss.backward()
 
-        return distill_output.total.detach()
+        return distill_output
 
     def _optimizer_step(self) -> None:
         if self._use_amp:
@@ -214,19 +222,45 @@ class DistillationTrainer:
         self.scheduler.step()
         self.optimizer.zero_grad(set_to_none=True)
 
-    def _log_metrics(self, loss: torch.Tensor) -> None:
+    def _prepare_metrics(
+        self,
+        distill_output: DistillationLossOutput,
+        grad_norm: Optional[torch.Tensor],
+        gpu_mem_mb: Optional[float],
+    ) -> dict:
         metrics = {
-            "loss": float(loss.cpu().item()),
+            "loss": to_float(distill_output.total),
+            "cross_entropy": to_float(distill_output.cross_entropy),
+            "kl_divergence": to_float(distill_output.kl_divergence),
+            "frobenius": to_float(distill_output.frobenius),
             "lr": float(self.scheduler.get_last_lr()[0]),
-            "alpha": self.loss_fn.current_alpha(),
-            "temperature": self.loss_fn.current_temperature(),
+            "alpha": float(distill_output.alpha),
+            "temperature": float(distill_output.temperature),
         }
-        if self.writer:
-            self.writer.add_scalar("train/loss", metrics["loss"], self.global_step)
-            self.writer.add_scalar("train/lr", metrics["lr"], self.global_step)
-            self.writer.add_scalar("train/alpha", metrics["alpha"], self.global_step)
-            self.writer.add_scalar("train/temperature", metrics["temperature"], self.global_step)
-        print(json.dumps({"step": self.global_step, **metrics}))
+        if grad_norm is not None:
+            metrics["grad_norm"] = to_float(grad_norm)
+        if gpu_mem_mb is not None:
+            metrics["gpu_memory_mb"] = float(gpu_mem_mb)
+        return metrics
+
+    def _record_tensorboard(self, step: int, metrics: dict) -> None:
+        if not self.writer:
+            return
+        self.writer.add_scalar("train/loss", metrics["loss"], step)
+        self.writer.add_scalar("train/cross_entropy", metrics["cross_entropy"], step)
+        self.writer.add_scalar("train/kl_divergence", metrics["kl_divergence"], step)
+        self.writer.add_scalar("train/frobenius", metrics["frobenius"], step)
+        self.writer.add_scalar("train/lr", metrics["lr"], step)
+        self.writer.add_scalar("train/alpha", metrics["alpha"], step)
+        self.writer.add_scalar("train/temperature", metrics["temperature"], step)
+        if "grad_norm" in metrics:
+            self.writer.add_scalar("train/grad_norm", metrics["grad_norm"], step)
+        if "gpu_memory_mb" in metrics:
+            self.writer.add_scalar("train/gpu_memory_mb", metrics["gpu_memory_mb"], step)
+
+    @staticmethod
+    def _print_metrics(step: int, metrics: dict) -> None:
+        print(json.dumps({"step": step, **metrics}))
 
     def _save_checkpoint(self, epoch: int) -> None:
         if not self.enable_checkpointing:

@@ -15,3 +15,4 @@ wheels/
 # Training artifacts
 checkpoints/
 runs/
+artifacts/

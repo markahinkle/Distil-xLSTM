@@ -27,6 +27,7 @@ training:
   logging:
     log_every: 50
     tensorboard_dir: runs/distil_xlstm
+    metrics_path: artifacts/metrics.jsonl
 loss:
   alpha_initial: 0.8
   alpha_final: 0.5

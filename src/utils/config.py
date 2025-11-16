@@ -8,14 +8,14 @@ from typing import Any, Dict
 import yaml
 
 from src.data import FineWebStreamConfig
-from src.distillation import (
+from src.distillation.configs import (
     CheckpointConfig,
-    DeltaDistillationConfig,
     LoggingConfig,
     OptimizerConfig,
     SchedulerConfig,
     TrainingConfig,
 )
+from src.distillation.loss import DeltaDistillationConfig
 
 
 def _update_dataclass(instance, values: Dict[str, Any]):
@@ -52,6 +52,10 @@ def load_training_config(path: Path) -> tuple[TrainingConfig, DeltaDistillationC
             training.logging = _update_dataclass(LoggingConfig(), train_raw.pop("logging"))
             if isinstance(training.logging.tensorboard_dir, str):
                 training.logging.tensorboard_dir = Path(training.logging.tensorboard_dir)
+            if training.logging.metrics_path is not None and isinstance(
+                training.logging.metrics_path, str
+            ):
+                training.logging.metrics_path = Path(training.logging.metrics_path)
         _update_dataclass(training, train_raw)
 
     if "loss" in raw:
