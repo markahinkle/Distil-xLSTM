@@ -1,3 +1,10 @@
+from .student import (
+    DistilXLSTMStudent,
+    StudentArchitectureSpec,
+    StudentForwardOutput,
+    build_student_spec_from_teacher,
+    create_stack_config,
+)
 from .teacher import (
     TEACHER_MODEL_ID,
     TeacherResources,
@@ -13,6 +20,11 @@ from .xlstm_teacher import (
 )
 
 __all__ = [
+    "DistilXLSTMStudent",
+    "StudentArchitectureSpec",
+    "StudentForwardOutput",
+    "build_student_spec_from_teacher",
+    "create_stack_config",
     "TEACHER_MODEL_ID",
     "TeacherResources",
     "infer_runtime_device",
