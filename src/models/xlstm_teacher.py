@@ -1,4 +1,4 @@
-"""Utilities for working with the Qwen2.5-1.5B teacher model."""
+"""Utilities for working with publicly available xLSTM checkpoints."""
 
 from __future__ import annotations
 
@@ -10,14 +10,16 @@ from typing import Optional
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
+from .teacher import infer_runtime_device
+
 LOGGER = logging.getLogger(__name__)
 
-TEACHER_MODEL_ID = "Qwen/Qwen2.5-1.5B"
+XLSTM_MODEL_ID = "PatrickHaller/xlstm_wikipedia_110M_500M"
 
 
 @dataclass
-class TeacherResources:
-    """Container holding the teacher model, tokenizer, and runtime metadata."""
+class XLSTMTeacherResources:
+    """Container holding the xLSTM teacher model, tokenizer, and runtime metadata."""
 
     model: AutoModelForCausalLM
     tokenizer: AutoTokenizer
@@ -25,47 +27,20 @@ class TeacherResources:
     dtype: torch.dtype
 
 
-def infer_runtime_device() -> tuple[torch.device, torch.dtype]:
-    """Infer the most suitable device and dtype for the local environment.
-
-    Preference order is CUDA > Metal (MPS) > CPU. FP16 is used when the backend
-    supports it; otherwise the model falls back to FP32.
-    """
-
-    if torch.cuda.is_available():
-        return torch.device("cuda"), torch.float16
-
-    if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
-        return torch.device("mps"), torch.float16
-
-    return torch.device("cpu"), torch.float32
-
-
-def load_teacher_model(
-    model_id: str = TEACHER_MODEL_ID,
+def load_xlstm_teacher(
+    model_id: str = XLSTM_MODEL_ID,
     device: Optional[torch.device] = None,
     dtype: Optional[torch.dtype] = None,
     cache_dir: Optional[Path] = None,
-) -> TeacherResources:
-    """Load the Qwen teacher model and tokenizer with sensible defaults.
-
-    Parameters
-    ----------
-    model_id:
-        Hugging Face model identifier.
-    device:
-        Optional explicit device override.
-    dtype:
-        Optional explicit dtype override.
-    cache_dir:
-        Optional path to cache downloads. Defaults to the HF cache directory.
-    """
+) -> XLSTMTeacherResources:
+    """Download and load a pretrained xLSTM checkpoint via Hugging Face."""
 
     runtime_device, runtime_dtype = infer_runtime_device()
     device = device or runtime_device
-    dtype = dtype or runtime_dtype
+    if dtype is None:
+        dtype = torch.float16 if device.type == "cuda" else torch.float32
 
-    LOGGER.info("Loading teacher model %s on %s (%s)", model_id, device, dtype)
+    LOGGER.info("Loading xLSTM model %s on %s (%s)", model_id, device, dtype)
 
     tokenizer = AutoTokenizer.from_pretrained(
         model_id,
@@ -73,17 +48,14 @@ def load_teacher_model(
         trust_remote_code=True,
         cache_dir=str(cache_dir) if cache_dir else None,
     )
-
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
     model_kwargs = {
         "dtype": dtype,
         "trust_remote_code": True,
-        "low_cpu_mem_usage": True,
         "cache_dir": str(cache_dir) if cache_dir else None,
     }
-
     if device.type == "cpu":
         model_kwargs["device_map"] = None
     else:
@@ -94,24 +66,44 @@ def load_teacher_model(
     if device.type in {"cpu", "mps"}:
         model.to(device)
 
+    xlstm_inner_cfg = getattr(model.config, "_xlstm_config", None)
+    if isinstance(xlstm_inner_cfg, dict):
+        num_layers = xlstm_inner_cfg.get("num_blocks")
+        hidden_size = xlstm_inner_cfg.get("embedding_dim")
+        if num_layers is not None:
+            model.config.num_hidden_layers = num_layers
+            if not hasattr(model.generation_config, "num_hidden_layers"):
+                model.generation_config.num_hidden_layers = num_layers
+        if hidden_size is not None:
+            model.config.hidden_size = hidden_size
+            if not hasattr(model.generation_config, "hidden_size"):
+                model.generation_config.hidden_size = hidden_size
+
+    model.generation_config.use_cache = False
+
     model.eval()
 
-    return TeacherResources(model=model, tokenizer=tokenizer, device=device, dtype=dtype)
+    return XLSTMTeacherResources(
+        model=model,
+        tokenizer=tokenizer,
+        device=device,
+        dtype=dtype,
+    )
 
 
-def run_teacher_smoke_test(
-    resources: TeacherResources,
-    prompt: str = "Hello from Distil-xLSTM!",
+def run_xlstm_smoke_test(
+    resources: XLSTMTeacherResources,
+    prompt: str = "Hello from Distil-xLSTM! This is",
     max_new_tokens: int = 8,
 ) -> str:
-    """Generate a short sample to verify the teacher loads correctly."""
+    """Generate a short sample to verify the xLSTM teacher loads correctly."""
 
     tokenizer = resources.tokenizer
     model = resources.model
     device = resources.device
 
     encoded = tokenizer(prompt, return_tensors="pt")
-    encoded = {k: v.to(device) for k, v in encoded.items()}
+    input_ids = encoded["input_ids"].to(device)
 
     generation_config = model.generation_config
     if generation_config.pad_token_id is None and tokenizer.pad_token_id is not None:
@@ -121,7 +113,7 @@ def run_teacher_smoke_test(
 
     with torch.inference_mode():
         output_ids = model.generate(
-            **encoded,
+            input_ids=input_ids,
             max_new_tokens=max_new_tokens,
             do_sample=False,
         )
