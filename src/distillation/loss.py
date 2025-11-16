@@ -130,6 +130,7 @@ class DeltaDistillationLoss(nn.Module):
         alpha = self.current_alpha()
         temperature = self.current_temperature()
 
+        dtype = student_logits.dtype
         ce = self._cross_entropy(student_logits, labels)
         kl = self._kl_divergence(student_logits, teacher_logits, temperature)
         frob = self._frobenius_loss(
@@ -143,6 +144,10 @@ class DeltaDistillationLoss(nn.Module):
             + alpha * kl
             + self.config.beta * frob
         )
+        total = total.to(dtype)
+        ce = ce.to(dtype)
+        kl = kl.to(dtype)
+        frob = frob.to(dtype)
 
         self.step()
 
@@ -157,16 +162,16 @@ class DeltaDistillationLoss(nn.Module):
 
     def _cross_entropy(self, logits: Tensor, labels: Tensor) -> Tensor:
         vocab = logits.size(-1)
-        view = logits.view(-1, vocab)
-        ce = self.ce_loss(view, labels.view(-1))
+        view = logits.float().view(-1, vocab)
+        ce = self.ce_loss(view, labels.view(-1).long())
         return ce
 
     def _kl_divergence(self, student_logits: Tensor, teacher_logits: Tensor, temperature: float) -> Tensor:
         if temperature <= 0:
             raise ValueError("Temperature must be positive")
 
-        s_log_probs = F.log_softmax(student_logits / temperature, dim=-1)
-        t_probs = F.softmax(teacher_logits / temperature, dim=-1)
+        s_log_probs = F.log_softmax(student_logits.float() / temperature, dim=-1)
+        t_probs = F.softmax(teacher_logits.float() / temperature, dim=-1)
         kl = self.kl_loss(s_log_probs, t_probs) * (temperature ** 2)
         return kl
 
@@ -179,7 +184,8 @@ class DeltaDistillationLoss(nn.Module):
     ) -> Tensor:
         if student_hidden is None or teacher_hidden is None:
             device = student_hidden.device if student_hidden is not None else teacher_hidden[0].device  # type: ignore[index]
-            return torch.tensor(0.0, device=device)
+            dtype = student_hidden.dtype if student_hidden is not None else teacher_hidden[0].dtype  # type: ignore[index]
+            return torch.tensor(0.0, device=device, dtype=dtype)
 
         teacher_tensor = self._stack_teacher_hidden(
             teacher_hidden,
@@ -193,7 +199,7 @@ class DeltaDistillationLoss(nn.Module):
             student_tensor = student_tensor * mask
             teacher_tensor = teacher_tensor * mask
 
-        diff = teacher_tensor - student_tensor
+        diff = (teacher_tensor - student_tensor).float()
         frob = torch.linalg.vector_norm(diff)
 
         if self.config.normalize_hidden:

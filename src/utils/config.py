@@ -58,6 +58,9 @@ def load_training_config(path: Path) -> tuple[TrainingConfig, DeltaDistillationC
                 training.logging.metrics_path = Path(training.logging.metrics_path)
         _update_dataclass(training, train_raw)
 
+    training.teacher_dtype = str(training.teacher_dtype).lower()
+    training.student_dtype = str(training.student_dtype).lower()
+
     if "loss" in raw:
         _update_dataclass(loss, raw["loss"])
 

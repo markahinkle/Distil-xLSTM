@@ -12,6 +12,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+import torch
+
 from src.distillation import DistillationTrainer
 from src.models import (
     DistilXLSTMStudent,
@@ -46,6 +48,22 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _resolve_dtype(name: str):
+    name = name.lower()
+    if name in ("auto", "none", "null"):
+        return None
+    mapping = {
+        "float32": torch.float32,
+        "float16": torch.float16,
+        "fp16": torch.float16,
+        "bfloat16": torch.bfloat16,
+        "bf16": torch.bfloat16,
+    }
+    if name not in mapping:
+        raise ValueError(f"Unrecognized dtype '{name}'. Valid options: {list(mapping.keys()) + ['auto']}")
+    return mapping[name]
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s - %(message)s")
     args = parse_args()
@@ -63,13 +81,15 @@ def main() -> None:
     training_config.logging.tensorboard_dir = tensorboard_dir
     training_config.logging.metrics_path = metrics_path
     training_config.checkpoint.output_dir = checkpoints_dir
-    teacher = load_teacher_model()
+    teacher_dtype = _resolve_dtype(training_config.teacher_dtype)
+    teacher = load_teacher_model(dtype=teacher_dtype)
     tokenizer = teacher.tokenizer
 
     spec = build_student_spec_from_teacher(teacher, context_length=training_config.max_length)
     LOGGER.info("Using student spec: %s", spec)
 
-    student = DistilXLSTMStudent.from_teacher(teacher, spec=spec)
+    student_dtype = _resolve_dtype(training_config.student_dtype)
+    student = DistilXLSTMStudent.from_teacher(teacher, spec=spec, dtype=student_dtype)
 
     trainer = DistillationTrainer(
         teacher,
@@ -77,6 +97,7 @@ def main() -> None:
         loss_config=loss_config,
         train_config=training_config,
         tokenizer=tokenizer,
+        output_dir=output_dir,
     )
 
     trainer.train()

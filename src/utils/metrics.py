@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+import math
 import torch
 
 __all__ = ["MetricsLogger", "collect_device_memory", "to_float"]
@@ -35,11 +36,17 @@ class MetricsLogger:
             if value is None:
                 continue
             if isinstance(value, torch.Tensor):
-                record[key] = to_float(value)
+                converted = to_float(value)
             elif isinstance(value, (int, float)):
-                record[key] = float(value)
+                converted = float(value)
             else:
                 record[key] = value
+                continue
+
+            if math.isnan(converted) or math.isinf(converted):
+                continue
+
+            record[key] = converted
         self._fh.write(json.dumps(record) + "\n")
         self._fh.flush()
 

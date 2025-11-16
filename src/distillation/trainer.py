@@ -8,6 +8,8 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Optional
 
+import math
+
 import torch
 import torch.nn as nn
 from torch.amp import GradScaler, autocast
@@ -46,6 +48,7 @@ class DistillationTrainer:
         loss_config: DeltaDistillationConfig,
         train_config: TrainingConfig,
         tokenizer,
+        output_dir: Path,
     ) -> None:
         self.teacher = teacher
         self.student = student
@@ -53,6 +56,7 @@ class DistillationTrainer:
         self.device = teacher.device
         self.train_config = train_config
         self.loss_fn = DeltaDistillationLoss(loss_config)
+        self.output_dir = Path(output_dir)
 
         scaler_device = "cuda" if torch.cuda.is_available() else "cpu"
         self.scaler = GradScaler(scaler_device, enabled=self._use_amp)
@@ -195,6 +199,13 @@ class DistillationTrainer:
 
             hidden_states = student_outputs.hidden_states[-1] if student_outputs.hidden_states else None
 
+        self._check_tensor("student_logits", student_outputs.logits)
+        if hidden_states is not None:
+            self._check_tensor("student_hidden", hidden_states)
+        self._check_tensor("teacher_logits", teacher_outputs.logits)
+        for idx, hidden in enumerate(teacher_outputs.hidden_states):
+            self._check_tensor(f"teacher_hidden_{idx}", hidden)
+
             distill_output = self.loss_fn(
                 student_logits=student_outputs.logits,
                 teacher_logits=teacher_outputs.logits,
@@ -205,6 +216,17 @@ class DistillationTrainer:
             )
 
             loss = distill_output.total / accumulation
+
+        if torch.isnan(distill_output.total) or torch.isinf(distill_output.total):
+            LOGGER.error(
+                "Encountered non-finite loss at global step %d (loss=%s, CE=%s, KL=%s, Frobenius=%s)",
+                self.global_step,
+                distill_output.total.item(),
+                distill_output.cross_entropy.item(),
+                distill_output.kl_divergence.item(),
+                distill_output.frobenius.item(),
+            )
+            raise FloatingPointError("Non-finite loss encountered; aborting training run.")
 
         if self._use_amp:
             self.scaler.scale(loss).backward()
@@ -228,17 +250,25 @@ class DistillationTrainer:
         grad_norm: Optional[torch.Tensor],
         gpu_mem_mb: Optional[float],
     ) -> dict:
+        def _safe(value):
+            if value is None:
+                return None
+            as_float = to_float(value)
+            if math.isnan(as_float) or math.isinf(as_float):
+                return None
+            return as_float
+
         metrics = {
-            "loss": to_float(distill_output.total),
-            "cross_entropy": to_float(distill_output.cross_entropy),
-            "kl_divergence": to_float(distill_output.kl_divergence),
-            "frobenius": to_float(distill_output.frobenius),
+            "loss": _safe(distill_output.total),
+            "cross_entropy": _safe(distill_output.cross_entropy),
+            "kl_divergence": _safe(distill_output.kl_divergence),
+            "frobenius": _safe(distill_output.frobenius),
             "lr": float(self.scheduler.get_last_lr()[0]),
             "alpha": float(distill_output.alpha),
             "temperature": float(distill_output.temperature),
         }
         if grad_norm is not None:
-            metrics["grad_norm"] = to_float(grad_norm)
+            metrics["grad_norm"] = _safe(grad_norm)
         if gpu_mem_mb is not None:
             metrics["gpu_memory_mb"] = float(gpu_mem_mb)
         return metrics
@@ -261,6 +291,17 @@ class DistillationTrainer:
     @staticmethod
     def _print_metrics(step: int, metrics: dict) -> None:
         print(json.dumps({"step": step, **metrics}))
+
+    def _check_tensor(self, name: str, tensor: torch.Tensor) -> None:
+        if tensor is None:
+            return
+        if torch.isnan(tensor).any() or torch.isinf(tensor).any():
+            debug_dir = self.output_dir / "debug"
+            debug_dir.mkdir(parents=True, exist_ok=True)
+            save_path = debug_dir / f"{name}_step{self.global_step}.pt"
+            torch.save(tensor.detach().cpu(), save_path)
+            LOGGER.error("Saved non-finite tensor '%s' to %s", name, save_path)
+            raise FloatingPointError(f"{name} contains non-finite values")
 
     def _save_checkpoint(self, epoch: int) -> None:
         if not self.enable_checkpointing:

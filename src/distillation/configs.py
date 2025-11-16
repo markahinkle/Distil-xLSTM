@@ -53,6 +53,8 @@ class TrainingConfig:
     mixed_precision: bool = True
     max_length: int = 512
     num_workers: int = 0
+    teacher_dtype: str = "auto"
+    student_dtype: str = "auto"
     dataset: FineWebStreamConfig = field(default_factory=FineWebStreamConfig)
     optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
     scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
