@@ -10,7 +10,7 @@ from typing import Optional
 
 import torch
 import torch.nn as nn
-from torch.cuda.amp import GradScaler, autocast
+from torch.amp import GradScaler, autocast
 from torch.utils.tensorboard import SummaryWriter
 from transformers.optimization import get_cosine_schedule_with_warmup
 
@@ -80,7 +80,8 @@ class DistillationTrainer:
         self.train_config = train_config
         self.loss_fn = DeltaDistillationLoss(loss_config)
 
-        self.scaler = GradScaler(enabled=self._use_amp)
+        scaler_device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.scaler = GradScaler(scaler_device, enabled=self._use_amp)
         self.writer: Optional[SummaryWriter] = None
         if train_config.logging.tensorboard_dir is not None:
             self.writer = SummaryWriter(str(train_config.logging.tensorboard_dir))
@@ -100,8 +101,12 @@ class DistillationTrainer:
             num_training_steps=total_steps,
         )
 
-        self.checkpoint_dir = train_config.checkpoint.output_dir
-        self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        self.enable_checkpointing = (
+            train_config.checkpoint.save_every > 0 or train_config.checkpoint.keep_last > 0
+        )
+        self.checkpoint_dir = Path(train_config.checkpoint.output_dir)
+        if self.enable_checkpointing:
+            self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
         self.global_step = 0
 
@@ -149,7 +154,8 @@ class DistillationTrainer:
                     self._log_metrics(loss)
 
                 if (
-                    self.train_config.checkpoint.save_every > 0
+                    self.enable_checkpointing
+                    and self.train_config.checkpoint.save_every > 0
                     and self.global_step % self.train_config.checkpoint.save_every == 0
                     and self.global_step > 0
                 ):
@@ -158,7 +164,8 @@ class DistillationTrainer:
                 self.global_step += 1
 
             self.loss_fn.epoch_update()
-            self._save_checkpoint(epoch)
+            if self.enable_checkpointing:
+                self._save_checkpoint(epoch)
 
         if self.writer:
             self.writer.close()
@@ -167,7 +174,8 @@ class DistillationTrainer:
         self.student.train()
         self.teacher.model.eval()
 
-        with autocast(enabled=self._use_amp):
+        autocast_device = "cuda" if torch.cuda.is_available() else "cpu"
+        with autocast(device_type=autocast_device, enabled=self._use_amp):
             student_outputs = self.student(input_ids, return_hidden_states=True)
             with torch.no_grad():
                 teacher_outputs = self.teacher.model(
@@ -221,6 +229,8 @@ class DistillationTrainer:
         print(json.dumps({"step": self.global_step, **metrics}))
 
     def _save_checkpoint(self, epoch: int) -> None:
+        if not self.enable_checkpointing:
+            return
         ckpt_path = self.checkpoint_dir / f"checkpoint_step{self.global_step:07d}.pt"
         payload = {
             "epoch": epoch,
@@ -236,6 +246,8 @@ class DistillationTrainer:
         self._prune_checkpoints()
 
     def _prune_checkpoints(self) -> None:
+        if not self.enable_checkpointing:
+            return
         keep = self.train_config.checkpoint.keep_last
         if keep <= 0:
             return
