@@ -15,7 +15,7 @@ from .teacher import infer_runtime_device
 LOGGER = logging.getLogger(__name__)
 
 XLSTM_MODEL_ID = "PatrickHaller/xlstm_wikipedia_110M_500M"
-
+# XLSTM_MODEL_ID = "NX-AI/xLSTM-7b"
 
 @dataclass
 class XLSTMTeacherResources:
@@ -93,7 +93,7 @@ def load_xlstm_teacher(
 
 def run_xlstm_smoke_test(
     resources: XLSTMTeacherResources,
-    prompt: str = "Hello from Distil-xLSTM! This is",
+    prompt: str = "Hello from Distil-xLSTM!",
     max_new_tokens: int = 8,
 ) -> str:
     """Generate a short sample to verify the xLSTM teacher loads correctly."""
