@@ -1,6 +1,6 @@
 training:
-  num_epochs: 1
-  steps_per_epoch: 50
+  num_epochs: 10
+  steps_per_epoch: 100
   batch_size: 1
   gradient_accumulation_steps: 1
   max_grad_norm: 1.0
