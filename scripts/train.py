@@ -81,14 +81,17 @@ def main() -> None:
     args = parse_args()
 
     training_config, loss_config = load_training_config(args.config)
+    import datetime
     output_dir = args.output_dir
-    if output_dir.exists():
-        shutil.rmtree(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    tensorboard_dir = output_dir / "tensorboard"
-    metrics_path = output_dir / "metrics.jsonl"
-    checkpoints_dir = output_dir / "checkpoints"
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_dir = output_dir / timestamp
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    tensorboard_dir = run_dir / "tensorboard"
+    metrics_path = run_dir / "metrics.jsonl"
+    checkpoints_dir = run_dir / "checkpoints"
 
     training_config.logging.tensorboard_dir = tensorboard_dir
     training_config.logging.metrics_path = metrics_path
