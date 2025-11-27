@@ -19,6 +19,20 @@ from .xlstm_teacher import (
     run_xlstm_smoke_test,
 )
 
+from .lstm_student import (
+    DistilLSTMStudent,
+    build_lstm_student_spec_from_teacher,
+)
+
+try:
+    from .mamba_student import (
+        DistilMambaStudent,
+        build_mamba_student_spec_from_teacher,
+    )
+except ImportError:
+    print("Mamba student model could not be imported. Ensure all dependencies are installed.")
+    
+
 __all__ = [
     "DistilXLSTMStudent",
     "StudentArchitectureSpec",
@@ -34,4 +48,6 @@ __all__ = [
     "XLSTMTeacherResources",
     "load_xlstm_teacher",
     "run_xlstm_smoke_test",
+    "DistilLSTMStudent",
+    "build_lstm_student_spec_from_teacher",
 ]

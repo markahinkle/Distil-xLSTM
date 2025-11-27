@@ -29,7 +29,7 @@ from src.distillation.loss import (
     DeltaDistillationLoss,
     DistillationLossOutput,
 )
-from src.models import DistilXLSTMStudent, TeacherResources
+from src.models import TeacherResources
 from src.utils.metrics import MetricsLogger, collect_device_memory, to_float
 
 import logging
@@ -43,7 +43,7 @@ class DistillationTrainer:
     def __init__(
         self,
         teacher: TeacherResources,
-        student: DistilXLSTMStudent,
+        student,
         *,
         loss_config: DeltaDistillationConfig,
         train_config: TrainingConfig,
@@ -283,7 +283,7 @@ class DistillationTrainer:
         self.writer.add_scalar("train/lr", metrics["lr"], step)
         self.writer.add_scalar("train/alpha", metrics["alpha"], step)
         self.writer.add_scalar("train/temperature", metrics["temperature"], step)
-        if "grad_norm" in metrics:
+        if "grad_norm" in metrics and metrics["grad_norm"] is not None:
             self.writer.add_scalar("train/grad_norm", metrics["grad_norm"], step)
         if "gpu_memory_mb" in metrics:
             self.writer.add_scalar("train/gpu_memory_mb", metrics["gpu_memory_mb"], step)

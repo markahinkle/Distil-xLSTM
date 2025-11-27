@@ -18,8 +18,18 @@ from src.distillation import DistillationTrainer
 from src.models import (
     DistilXLSTMStudent,
     build_student_spec_from_teacher,
+    DistilLSTMStudent,
+    build_lstm_student_spec_from_teacher,
     load_teacher_model,
 )
+try:
+    from src.models import (
+        DistilMambaStudent,
+        build_mamba_student_spec_from_teacher,
+    )
+except ImportError:
+    print("Mamba student model could not be imported. Ensure all dependencies are installed.")
+
 from src.utils import load_training_config
 from src.utils.report import generate_report
 
@@ -85,11 +95,22 @@ def main() -> None:
     teacher = load_teacher_model(dtype=teacher_dtype)
     tokenizer = teacher.tokenizer
 
-    spec = build_student_spec_from_teacher(teacher, context_length=training_config.max_length)
-    LOGGER.info("Using student spec: %s", spec)
-
     student_dtype = _resolve_dtype(training_config.student_dtype)
-    student = DistilXLSTMStudent.from_teacher(teacher, spec=spec, dtype=student_dtype)
+    student_class = training_config.student_model.lower() # "xlstm", "lstm", or "mamba"
+
+    if student_class == "xlstm":
+        spec = build_student_spec_from_teacher(teacher, context_length=training_config.max_length)
+        student = DistilxLSTMStudent.from_teacher(teacher, spec=spec, dtype=student_dtype)
+    elif student_class == "lstm":
+        spec = build_lstm_student_spec_from_teacher(teacher, context_length=training_config.max_length)
+        student = DistilLSTMStudent.from_teacher(teacher, spec=spec, dtype=student_dtype)
+    elif student_class == "mamba":
+        spec = build_mamba_student_spec_from_teacher(teacher, context_length=training_config.max_length)
+        student = DistilMambaStudent.from_teacher(teacher, spec=spec, dtype=student_dtype)
+    else:
+        raise ValueError(f"Unrecognized student class '{student_class}'")
+    
+    LOGGER.info("Using student spec: %s", spec)
 
     trainer = DistillationTrainer(
         teacher,
