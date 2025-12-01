@@ -26,6 +26,11 @@ class DeltaDistillationConfig:
     normalize_hidden: bool = True
     eps: float = 1e-8
 
+    # New flags to enable/disable loss components
+    use_ce: bool = True
+    use_kl: bool = True
+    use_frobenius: bool = True
+
     def clamp(self) -> None:
         self.alpha_initial = float(self.alpha_initial)
         self.alpha_final = float(self.alpha_final)
@@ -131,20 +136,43 @@ class DeltaDistillationLoss(nn.Module):
         temperature = self.current_temperature()
 
         dtype = student_logits.dtype
-        ce = self._cross_entropy(student_logits, labels)
-        kl = self._kl_divergence(student_logits, teacher_logits, temperature)
-        frob = self._frobenius_loss(
-            student_hidden,
-            teacher_hidden,
-            attention_mask=attention_mask,
-        )
 
-        total = (
-            (1.0 - alpha - self.config.beta) * ce
-            + alpha * kl
-            + self.config.beta * frob
-        )
-        total = total.to(dtype)
+        ce = torch.tensor(0.0, device=student_logits.device, dtype=torch.float)
+        kl = torch.tensor(0.0, device=student_logits.device, dtype=torch.float)
+        frob = torch.tensor(0.0, device=student_logits.device, dtype=torch.float)
+
+        if self.config.use_ce:
+            ce = self._cross_entropy(student_logits, labels)
+        if self.config.use_kl:
+            kl = self._kl_divergence(student_logits, teacher_logits, temperature)
+        if self.config.use_frobenius:
+            frob = self._frobenius_loss(
+                student_hidden,
+                teacher_hidden,
+                attention_mask=attention_mask,
+            )
+
+        # Compute total loss based on enabled components
+        total = torch.tensor(0.0, device=student_logits.device, dtype=dtype)
+        weight_sum = 0.0
+
+        if self.config.use_ce:
+            total += (1.0 - alpha - self.config.beta) * ce
+            weight_sum += (1.0 - alpha - self.config.beta)
+        if self.config.use_kl:
+            total += alpha * kl
+            weight_sum += alpha
+        if self.config.use_frobenius:
+            total += self.config.beta * frob
+            weight_sum += self.config.beta
+
+        # If no component is enabled, total is zero. Otherwise, normalize by sum of weights.
+        if weight_sum > 0:
+            total = total.to(dtype)
+            total = total / weight_sum
+        else:
+            total = torch.tensor(0.0, device=student_logits.device, dtype=dtype)
+
         ce = ce.to(dtype)
         kl = kl.to(dtype)
         frob = frob.to(dtype)

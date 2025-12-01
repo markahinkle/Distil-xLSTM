@@ -100,7 +100,7 @@ def main() -> None:
 
     if student_class == "xlstm":
         spec = build_student_spec_from_teacher(teacher, context_length=training_config.max_length)
-        student = DistilxLSTMStudent.from_teacher(teacher, spec=spec, dtype=student_dtype)
+        student = DistilXLSTMStudent.from_teacher(teacher, spec=spec, dtype=student_dtype)
     elif student_class == "lstm":
         spec = build_lstm_student_spec_from_teacher(teacher, context_length=training_config.max_length)
         student = DistilLSTMStudent.from_teacher(teacher, spec=spec, dtype=student_dtype)

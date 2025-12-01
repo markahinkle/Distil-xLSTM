@@ -3,18 +3,19 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 from dataclasses import asdict
 from pathlib import Path
 from typing import Optional
 
-import math
-
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.amp import GradScaler, autocast
 from torch.utils.tensorboard import SummaryWriter
 from transformers.optimization import get_cosine_schedule_with_warmup
+from torch.utils.data import IterableDataset
 
 from src.data import FineWebStreamConfig, build_tokenized_dataloader, load_fineweb_stream
 from src.distillation.configs import (
@@ -93,25 +94,92 @@ class DistillationTrainer:
 
         self.global_step = 0
 
+        # Build train/eval dataloaders once
+        self.train_loader, self.eval_loader = self._build_dataloaders()
+
     @property
     def _use_amp(self) -> bool:
         return self.train_config.mixed_precision and torch.cuda.is_available()
 
-    def _build_dataloader(self):
+    def _build_dataloaders(self):
+        """Create tokenized train and eval dataloaders by splitting the dataset.
+
+        Uses training_config.logging.eval_fraction if present, otherwise defaults to 5%.
+        """
+        # Attempt to build loaders; handle IterableDataset (no len) separately.
         dataset = load_fineweb_stream(self.train_config.dataset)
-        dataloader = build_tokenized_dataloader(
-            dataset,
+
+        # Determine eval fraction (used only for map-style datasets)
+        eval_frac = getattr(self.train_config.logging, "eval_fraction", 0.05)
+        if not 0.0 <= eval_frac < 1.0:
+            eval_frac = 0.05
+
+        # If dataset is IterableDataset, create two independent instances
+        # (assumes load_fineweb_stream can produce fresh iterators) and
+        # rely on _evaluate_perplexity's max_batches to limit evaluation cost.
+        if isinstance(dataset, IterableDataset):
+            train_ds = dataset
+            eval_ds = load_fineweb_stream(self.train_config.dataset)
+
+            train_loader = build_tokenized_dataloader(
+                train_ds,
+                self.tokenizer,
+                batch_size=self.train_config.batch_size,
+                max_length=self.train_config.max_length,
+                num_workers=self.train_config.num_workers,
+            )
+            eval_loader = build_tokenized_dataloader(
+                eval_ds,
+                self.tokenizer,
+                batch_size=self.train_config.batch_size,
+                max_length=self.train_config.max_length,
+                num_workers=max(1, self.train_config.num_workers // 2),
+            )
+            return train_loader, eval_loader
+
+        # Fallback: map-style dataset with known length — keep deterministic split
+        try:
+            total = len(dataset)
+        except Exception:
+            # As a last resort, return a single loader and no eval loader
+            train_loader = build_tokenized_dataloader(
+                dataset,
+                self.tokenizer,
+                batch_size=self.train_config.batch_size,
+                max_length=self.train_config.max_length,
+                num_workers=self.train_config.num_workers,
+            )
+            return train_loader, None
+
+        eval_size = max(1, int(total * eval_frac))
+        train_size = max(1, total - eval_size)
+        generator = torch.Generator().manual_seed(42)
+        train_ds, eval_ds = torch.utils.data.random_split(dataset, [train_size, eval_size], generator=generator)
+
+        train_loader = build_tokenized_dataloader(
+            train_ds,
             self.tokenizer,
             batch_size=self.train_config.batch_size,
             max_length=self.train_config.max_length,
             num_workers=self.train_config.num_workers,
         )
-        return dataloader
+        eval_loader = build_tokenized_dataloader(
+            eval_ds,
+            self.tokenizer,
+            batch_size=self.train_config.batch_size,
+            max_length=self.train_config.max_length,
+            num_workers=max(1, self.train_config.num_workers // 2),
+        )
+        return train_loader, eval_loader
 
     def train(self) -> None:
-        dataloader = self._build_dataloader()
+        # use prebuilt loaders
+        dataloader = self.train_loader
         accumulation = self.train_config.gradient_accumulation_steps
         log_every = self.train_config.logging.log_every
+        # eval frequency and number of eval batches (optional in config)
+        eval_every = getattr(self.train_config.logging, "eval_every", log_every)
+        eval_batches = getattr(self.train_config.logging, "eval_batches", 10)
 
         try:
             for epoch in range(self.train_config.num_epochs):
@@ -137,7 +205,6 @@ class DistillationTrainer:
                     labels = batch["labels"].to(self.device)
 
                     distill_output = self._training_step(input_ids, attention_mask, labels, accumulation)
-
                     update_step = (self.global_step + 1) % accumulation == 0
                     grad_norm = None
                     if update_step:
@@ -149,6 +216,21 @@ class DistillationTrainer:
 
                     gpu_mem = collect_device_memory(self.device)
                     metrics_payload = self._prepare_metrics(distill_output, grad_norm, gpu_mem)
+
+                    # Periodic evaluation (perplexity)
+                    perplexity_val = None
+                    #print(f"global_step: {self.global_step}, eval_every: {eval_every}, eval_batches: {eval_batches}, eval_loader:{self.eval_loader is not None}")
+                    
+                    if self.eval_loader is not None and self.global_step % eval_every == 0:
+                        #print(f"Starting perplexity evaluation at step {self.global_step}")
+                        try:
+                            perplexity_val = self._evaluate_perplexity(self.eval_loader, max_batches=eval_batches)
+                        except Exception as exc:
+                            print(f"Error during perplexity evaluation at step {self.global_step}: {exc}")
+                            LOGGER.warning("Perplexity evaluation failed at step %d: %s", self.global_step, exc)
+                            perplexity_val = None
+                    #print(f"perplexity_val: {perplexity_val}")
+                    metrics_payload["perplexity"] = perplexity_val
 
                     if self.metrics_logger:
                         self.metrics_logger.log(self.global_step, metrics_payload)
@@ -273,6 +355,59 @@ class DistillationTrainer:
             metrics["gpu_memory_mb"] = float(gpu_mem_mb)
         return metrics
 
+    def _evaluate_perplexity(self, eval_loader, *, max_batches: int = 10) -> float:
+        """Compute perplexity over up to max_batches from eval_loader."""
+        self.student.eval()
+        total_nll = 0.0
+        total_tokens = 0
+        #print(f"Starting perplexity evaluation over max {max_batches} batches")
+        with torch.no_grad():
+            for i, batch in enumerate(eval_loader):
+                #print(f"eval batch: {i}")
+                if i >= max_batches:
+                    break
+                input_ids = batch["input_ids"].to(self.device)
+                attention_mask = batch.get("attention_mask")
+                if attention_mask is not None:
+                    attention_mask = attention_mask.to(self.device)
+                labels = batch["labels"].to(self.device)
+
+                outputs = self.student(input_ids, return_hidden_states=False)
+                logits = outputs.logits  # (B, L, V)
+                vocab = logits.size(-1)
+                logits_flat = logits.float().view(-1, vocab)
+                labels_flat = labels.view(-1)
+
+                # # handle ignored label sentinel (-100)
+                # mask = labels_flat != -100
+                # if mask.any():
+                #     losses = F.cross_entropy(logits_flat, labels_flat.long(), reduction="none")
+                #     # select valid positions
+                #     valid_losses = losses[mask]
+                #     total_nll += float(valid_losses.sum().item())
+                #     total_tokens += int(mask.sum().item())
+                # else:
+                #     # no -100 sentinel found; sum over all tokens
+                #     loss_sum = F.cross_entropy(logits_flat, labels_flat.long(), reduction="sum")
+                #     total_nll += float(loss_sum.item())
+                #     total_tokens += labels_flat.numel()
+
+                # compute per-token loss and only count non-ignored tokens (ignore_index=-100)
+                losses = F.cross_entropy(logits_flat, labels_flat.long(), reduction="none", ignore_index=-100)
+                valid_mask = labels_flat != -100
+                valid_sum = float(losses[valid_mask].sum().item()) if valid_mask.any() else 0.0
+                valid_count = int(valid_mask.sum().item())
+                total_nll += valid_sum
+                total_tokens += valid_count
+                #print(f"total_nll: {total_nll}, total_tokens: {total_tokens}")
+
+        if total_tokens == 0:
+            print("No valid tokens found for perplexity computation.")
+            return None
+        avg_nll = total_nll / float(total_tokens)
+        perplexity = float(math.exp(min(avg_nll, 100.0)))  # clip to avoid overflow
+        return perplexity
+
     def _record_tensorboard(self, step: int, metrics: dict) -> None:
         if not self.writer:
             return
@@ -287,6 +422,8 @@ class DistillationTrainer:
             self.writer.add_scalar("train/grad_norm", metrics["grad_norm"], step)
         if "gpu_memory_mb" in metrics:
             self.writer.add_scalar("train/gpu_memory_mb", metrics["gpu_memory_mb"], step)
+        if "perplexity" in metrics and metrics["perplexity"] is not None:
+            self.writer.add_scalar("eval/perplexity", metrics["perplexity"], step)
 
     @staticmethod
     def _print_metrics(step: int, metrics: dict) -> None:

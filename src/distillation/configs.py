@@ -41,6 +41,9 @@ class LoggingConfig:
     log_every: int = 50
     tensorboard_dir: Optional[Path] = Path("runs/distil_xlstm")
     metrics_path: Optional[Path] = Path("artifacts/metrics.jsonl")
+    eval_fraction: Optional[float] = 0.05
+    eval_every: Optional[int] = 50
+    eval_batches: Optional[int] = 10
 
 
 @dataclass

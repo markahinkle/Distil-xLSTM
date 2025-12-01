@@ -9,7 +9,7 @@ training:
   num_workers: 0
   teacher_dtype: float16
   student_dtype: float32
-  student_model: mamba
+  student_model: lstm
   dataset:
     dataset_name: HuggingFaceFW/fineweb
     subset: sample-10BT
@@ -31,6 +31,9 @@ training:
     log_every: 50
     tensorboard_dir: runs/distil_xlstm
     metrics_path: artifacts/metrics.jsonl
+    eval_fraction: 0.05
+    eval_batches: 50
+    eval_every: 50
 loss:
   alpha_initial: 0.8
   alpha_final: 0.5
@@ -40,3 +43,6 @@ loss:
   delta_temperature: 0.05
   beta: 0.05
   normalize_hidden: true
+  use_ce: true
+  use_kl: true
+  use_frobenius: true
