@@ -30,6 +30,21 @@ try:
 except ImportError:
     print("Mamba student model could not be imported. Ensure all dependencies are installed.")
 
+# Add transformer imports
+from src.models.transformer_student import (
+    load_transformer_student,
+    TransformerStudentResources,
+    DistilQwenTransformerStudent,
+    DistilVanillaTransformerStudent,
+)
+try:
+    from src.models import (
+        DistilMambaStudent,
+        build_mamba_student_spec_from_teacher,
+    )
+except ImportError:
+    print("Mamba student model could not be imported. Ensure all dependencies are installed.")
+
 from src.utils import load_training_config
 from src.utils.report import generate_report
 
@@ -107,8 +122,9 @@ def main() -> None:
     print(f"Teacher: {teacher_layers} layers, {teacher_params:,} parameters")
 
     student_dtype = _resolve_dtype(training_config.student_dtype)
-    student_class = training_config.student_model.lower() # "xlstm", "lstm", or "mamba"
 
+    student_class = training_config.student_model.lower() # "xlstm", "lstm", "mamba", "transformer"
+    spec = None
     if student_class == "xlstm":
         spec = build_student_spec_from_teacher(teacher, context_length=training_config.max_length)
         student = DistilXLSTMStudent.from_teacher(teacher, spec=spec, dtype=student_dtype)
@@ -124,12 +140,30 @@ def main() -> None:
     elif student_class == "mamba":
         spec = build_mamba_student_spec_from_teacher(teacher, context_length=training_config.max_length)
         student = DistilMambaStudent.from_teacher(teacher, spec=spec, dtype=student_dtype)
+    elif student_class == "transformer":
+        # Choose transformer variant from config
+        transformer_variant = getattr(training_config, "transformer_variant", "qwen").lower()
+        if transformer_variant == "qwen":
+            student = DistilQwenTransformerStudent.from_teacher(teacher, dtype=student_dtype)
+        elif transformer_variant == "vanilla":
+            student = DistilVanillaTransformerStudent.from_teacher(teacher, dtype=student_dtype)
+        else:
+            raise ValueError(f"Unrecognized transformer variant '{transformer_variant}'")
+        student_layers = getattr(student, "config", None)
+        if student_layers and hasattr(student_layers, "num_hidden_layers"):
+            student_layers = student_layers.num_hidden_layers
+        else:
+            student_layers = "N/A"
+        student_total_params = sum(p.numel() for p in student.parameters())
+        student_trainable_params = sum(p.numel() for p in student.parameters() if p.requires_grad)
+        print(
+            f"Student: {student_layers} layers, {student_total_params:,} total parameters, {student_trainable_params:,} trainable ({100.0 * student_trainable_params / student_total_params:.2f}% trainable)"
+        )
     else:
         raise ValueError(f"Unrecognized student class '{student_class}'")
-    
-    LOGGER.info("Using student spec: %s", spec)
 
-    # Print student model info
+    if spec is not None:
+        LOGGER.info("Using student spec: %s", spec)
 
     trainer = DistillationTrainer(
         teacher,
