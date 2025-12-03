@@ -58,4 +58,5 @@ __all__ = [
     "build_lstm_student_spec_from_teacher",
     "DistilQwenTransformerStudent",
     "DistilVanillaTransformerStudent",
+    "build_mamba_student_spec_from_teacher",
 ]

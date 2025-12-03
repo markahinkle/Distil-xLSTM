@@ -105,13 +105,12 @@ class DistilVanillaTransformerStudent(nn.Module):
         self.max_length = max_length
 
     @classmethod
-    def from_teacher(cls, teacher, dtype=None):
+    def from_teacher(cls, teacher, dtype=None, max_length=512):
         config = teacher.model.config
         vocab_size = getattr(config, "vocab_size", 151936)
         num_layers = min(getattr(config, "num_hidden_layers", 12), 12)
         hidden_dim = getattr(config, "hidden_size", 1536)
         num_heads = getattr(config, "num_attention_heads", 12)
-        max_length = getattr(config, "max_length", 512)
         dropout = 0.1
         device = teacher.device
         dtype = dtype or torch.float32
@@ -138,10 +137,10 @@ class DistilVanillaTransformerStudent(nn.Module):
                 hidden_states.append(x)
         x = self.norm(x)
         logits = self.lm_head(x)
-        return {
-            "logits": logits,
-            "hidden_states": hidden_states if return_hidden_states else None,
-        }
+        return VanillaTransformerOutput(
+            logits=logits,
+            hidden_states=hidden_states if return_hidden_states else None,
+        )
 
 
 """Student Transformer model (Qwen1.5-0.5B architecture, zero-initialized) for distillation."""
@@ -234,3 +233,9 @@ def run_transformer_student_smoke_test(
 
     text = tokenizer.decode(output_ids[0], skip_special_tokens=True)
     return text
+
+
+@dataclass
+class VanillaTransformerOutput:
+    logits: torch.Tensor
+    hidden_states: list[torch.Tensor] | None = None

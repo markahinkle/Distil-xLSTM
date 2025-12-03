@@ -22,13 +22,16 @@ from src.models import (
     build_lstm_student_spec_from_teacher,
     load_teacher_model,
 )
+
 try:
     from src.models import (
         DistilMambaStudent,
         build_mamba_student_spec_from_teacher,
     )
 except ImportError:
-    print("Mamba student model could not be imported. Ensure all dependencies are installed.")
+    print(
+        "Mamba student model could not be imported. Ensure all dependencies are installed."
+    )
 
 # Add transformer imports
 from src.models.transformer_student import (
@@ -37,13 +40,16 @@ from src.models.transformer_student import (
     DistilQwenTransformerStudent,
     DistilVanillaTransformerStudent,
 )
+
 try:
     from src.models import (
         DistilMambaStudent,
         build_mamba_student_spec_from_teacher,
     )
 except ImportError:
-    print("Mamba student model could not be imported. Ensure all dependencies are installed.")
+    print(
+        "Mamba student model could not be imported. Ensure all dependencies are installed."
+    )
 
 from src.utils import load_training_config
 from src.utils.report import generate_report
@@ -97,6 +103,7 @@ def main() -> None:
 
     training_config, loss_config = load_training_config(args.config)
     import datetime
+
     output_dir = args.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -123,11 +130,17 @@ def main() -> None:
 
     student_dtype = _resolve_dtype(training_config.student_dtype)
 
-    student_class = training_config.student_model.lower() # "xlstm", "lstm", "mamba", "transformer"
+    student_class = (
+        training_config.student_model.lower()
+    )  # "xlstm", "lstm", "mamba", "transformer"
     spec = None
     if student_class == "xlstm":
-        spec = build_student_spec_from_teacher(teacher, context_length=training_config.max_length)
-        student = DistilXLSTMStudent.from_teacher(teacher, spec=spec, dtype=student_dtype)
+        spec = build_student_spec_from_teacher(
+            teacher, context_length=training_config.max_length
+        )
+        student = DistilXLSTMStudent.from_teacher(
+            teacher, spec=spec, dtype=student_dtype
+        )
         student_layers = getattr(student.stack_config, "num_blocks", "N/A")
         student_total_params = student.num_parameters()
         student_trainable_params = student.num_parameters(trainable_only=True)
@@ -135,27 +148,47 @@ def main() -> None:
             f"Student: {student_layers} blocks, {student_total_params:,} total parameters, {student_trainable_params:,} trainable ({100.0 * student_trainable_params / student_total_params:.2f}% trainable)"
         )
     elif student_class == "lstm":
-        spec = build_lstm_student_spec_from_teacher(teacher, context_length=training_config.max_length)
-        student = DistilLSTMStudent.from_teacher(teacher, spec=spec, dtype=student_dtype)
+        spec = build_lstm_student_spec_from_teacher(
+            teacher, context_length=training_config.max_length
+        )
+        student = DistilLSTMStudent.from_teacher(
+            teacher, spec=spec, dtype=student_dtype
+        )
     elif student_class == "mamba":
-        spec = build_mamba_student_spec_from_teacher(teacher, context_length=training_config.max_length)
-        student = DistilMambaStudent.from_teacher(teacher, spec=spec, dtype=student_dtype)
+        spec = build_mamba_student_spec_from_teacher(
+            teacher, context_length=training_config.max_length
+        )
+        student = DistilMambaStudent.from_teacher(
+            teacher, spec=spec, dtype=student_dtype
+        )
     elif student_class == "transformer":
         # Choose transformer variant from config
-        transformer_variant = getattr(training_config, "transformer_variant", "qwen").lower()
+        transformer_variant = getattr(
+            training_config, "transformer_variant", "qwen"
+        ).lower()
         if transformer_variant == "qwen":
-            student = DistilQwenTransformerStudent.from_teacher(teacher, dtype=student_dtype)
+            student = DistilQwenTransformerStudent.from_teacher(
+                teacher, dtype=student_dtype
+            )
         elif transformer_variant == "vanilla":
-            student = DistilVanillaTransformerStudent.from_teacher(teacher, dtype=student_dtype)
+            student = DistilVanillaTransformerStudent.from_teacher(
+                teacher,
+                dtype=student_dtype,
+                max_length=training_config.max_length,
+            )
         else:
-            raise ValueError(f"Unrecognized transformer variant '{transformer_variant}'")
+            raise ValueError(
+                f"Unrecognized transformer variant '{transformer_variant}'"
+            )
         student_layers = getattr(student, "config", None)
         if student_layers and hasattr(student_layers, "num_hidden_layers"):
             student_layers = student_layers.num_hidden_layers
         else:
             student_layers = "N/A"
         student_total_params = sum(p.numel() for p in student.parameters())
-        student_trainable_params = sum(p.numel() for p in student.parameters() if p.requires_grad)
+        student_trainable_params = sum(
+            p.numel() for p in student.parameters() if p.requires_grad
+        )
         print(
             f"Student: {student_layers} layers, {student_total_params:,} total parameters, {student_trainable_params:,} trainable ({100.0 * student_trainable_params / student_total_params:.2f}% trainable)"
         )
