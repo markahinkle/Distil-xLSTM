@@ -132,7 +132,7 @@ def main() -> None:
 
     student_class = (
         training_config.student_model.lower()
-    )  # "xlstm", "lstm", "mamba", "transformer"
+    )  # "xlstm", "lstm", "mamba", "transformer_qwen" or "transformer_vanilla"
     spec = None
     if student_class == "xlstm":
         spec = build_student_spec_from_teacher(
@@ -161,28 +161,27 @@ def main() -> None:
         student = DistilMambaStudent.from_teacher(
             teacher, spec=spec, dtype=student_dtype
         )
-    elif student_class == "transformer":
-        # Choose transformer variant from config
-        transformer_variant = getattr(
-            training_config, "transformer_variant", "qwen"
-        ).lower()
-        if transformer_variant == "qwen":
-            student = DistilQwenTransformerStudent.from_teacher(
-                teacher, dtype=student_dtype
-            )
-        elif transformer_variant == "vanilla":
-            student = DistilVanillaTransformerStudent.from_teacher(
-                teacher,
-                dtype=student_dtype,
-                max_length=training_config.max_length,
-            )
-        else:
-            raise ValueError(
-                f"Unrecognized transformer variant '{transformer_variant}'"
-            )
-        student_layers = getattr(student, "config", None)
-        if student_layers and hasattr(student_layers, "num_hidden_layers"):
-            student_layers = student_layers.num_hidden_layers
+    elif student_class == "transformer_qwen":
+        student = DistilQwenTransformerStudent.from_teacher(
+            teacher, dtype=student_dtype
+        )
+        student_layers = getattr(student.config, "num_hidden_layers", "N/A")
+        student_total_params = sum(p.numel() for p in student.parameters())
+        student_trainable_params = sum(
+            p.numel() for p in student.parameters() if p.requires_grad
+        )
+        print(
+            f"Student: {student_layers} layers, {student_total_params:,} total parameters, {student_trainable_params:,} trainable ({100.0 * student_trainable_params / student_total_params:.2f}% trainable)"
+        )
+    elif student_class == "transformer_vanilla":
+        student = DistilVanillaTransformerStudent.from_teacher(
+            teacher,
+            dtype=student_dtype,
+            max_length=training_config.max_length,
+        )
+        student_layers = getattr(student, "layers", None)
+        if student_layers:
+            student_layers = len(student_layers)
         else:
             student_layers = "N/A"
         student_total_params = sum(p.numel() for p in student.parameters())
