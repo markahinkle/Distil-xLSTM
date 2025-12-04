@@ -131,7 +131,7 @@ class DeltaDistillationLoss(nn.Module):
 
         if student_logits.shape != teacher_logits.shape:
             raise ValueError("Student and teacher logits must have the same shape")
-
+        
         alpha = self.current_alpha()
         temperature = self.current_temperature()
 
@@ -198,8 +198,13 @@ class DeltaDistillationLoss(nn.Module):
         if temperature <= 0:
             raise ValueError("Temperature must be positive")
 
-        s_log_probs = F.log_softmax(student_logits.float() / temperature, dim=-1)
-        t_probs = F.softmax(teacher_logits.float() / temperature, dim=-1)
+        # Flatten to 2D: (batch * seq_len, vocab) so batchmean divides correctly
+        batch_size, seq_len, vocab_size = student_logits.shape
+        student_flat = student_logits.view(-1, vocab_size)
+        teacher_flat = teacher_logits.view(-1, vocab_size)
+
+        s_log_probs = F.log_softmax(student_flat.float() / temperature, dim=-1)
+        t_probs = F.softmax(teacher_flat.float() / temperature, dim=-1)
         kl = self.kl_loss(s_log_probs, t_probs) * (temperature ** 2)
         return kl
 
