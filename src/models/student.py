@@ -148,6 +148,13 @@ class DistilXLSTMStudent(nn.Module):
         self.embedding.weight.requires_grad = not freeze_embeddings
         self.lm_head.weight.requires_grad = not freeze_lm_head
 
+        # Print model info
+        num_blocks = stack_config.num_blocks
+        total_params = sum(p.numel() for p in self.parameters())
+        print(
+            f"{self.__class__.__name__}: {num_blocks} blocks, {total_params:,} parameters"
+        )
+
     @classmethod
     def from_teacher(
         cls,

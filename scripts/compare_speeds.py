@@ -22,8 +22,8 @@ models_compared = [
 ]
 
 # Prompt and test settings
-prompt = "The quick brown fox jumps over the lazy dog."
-num_runs = 10
+prompt = "The quick brown fox jumps over the lazy dog. And what about you? How do you feel about this random text? Isn't it too long for you? The quick brown fox jumps over the lazy dog. And what about you? How do you feel about this random text? Isn't it too long for you?"
+num_runs = 12 # because we delete the first two warmup runs!!!
 max_new_tokens = 16
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 dtype = torch.float32
@@ -98,9 +98,12 @@ def measure_inference_speed(model, tokenizer, prompt, max_new_tokens, num_runs):
                 output = model(inputs["input_ids"])
         end = time.time()
         elapsed = end - start
-        times.append(elapsed)
-        print(f"Run {run_idx+1}/{num_runs}: {elapsed:.4f}s")
-    return times
+        # Divide by number of generated tokens for fair comparison
+        time_per_token = elapsed / max_new_tokens
+        times.append(time_per_token)
+        print(f"Run {run_idx+1}/{num_runs}: {elapsed:.4f}s ({time_per_token:.6f}s/token)")
+    # Remove the first timed run from statistics
+    return times[2:]
 
 results = {}
 for model_name in models_compared:
@@ -123,8 +126,8 @@ for model_name in models_compared:
 plt.figure(figsize=(10, 6))
 data = [results[m] for m in models_compared if m in results]
 plt.boxplot(data, labels=[m for m in models_compared if m in results])
-plt.ylabel("Inference Time (seconds)")
-plt.title("Student Model Inference Speed Comparison")
+plt.ylabel("Inference Time per Token (seconds)")
+plt.title("Student Model Inference Speed per Token Comparison")
 plt.grid(True)
 plt.tight_layout()
 plot_path = Path(__file__).parent / "inference_speed_comparison.png"

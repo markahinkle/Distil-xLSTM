@@ -44,6 +44,12 @@ class DistilQwenTransformerStudent(nn.Module):
                 nn.init.constant_(module.bias, 0.0)
 
         model.apply(_init_weights)
+
+        # Print model info
+        num_layers = getattr(model.config, "num_hidden_layers", "N/A")
+        total_params = sum(p.numel() for p in model.parameters())
+        print(f"{cls.__name__}: {num_layers} layers, {total_params:,} parameters")
+
         model.eval()
         model.tokenizer = tokenizer
         return model
@@ -78,7 +84,7 @@ class TransformerBlock(nn.Module):
 
 # Vanilla transformer student
 class DistilVanillaTransformerStudent(nn.Module):
-    """Custom vanilla transformer student (~0.5B params, best practices)."""
+    """Custom vanilla transformer student with autoregressive generation."""
 
     def __init__(
         self,
@@ -96,21 +102,28 @@ class DistilVanillaTransformerStudent(nn.Module):
         self.pos_embedding = nn.Parameter(torch.zeros(1, max_length, hidden_dim))
         self.layers = nn.ModuleList(
             [
-                TransformerBlock(hidden_dim, num_heads, dropout=dropout)
+                TransformerBlock(hidden_dim, num_heads, mlp_ratio=4, dropout=dropout)
                 for _ in range(num_layers)
             ]
         )
         self.norm = nn.LayerNorm(hidden_dim)
         self.lm_head = nn.Linear(hidden_dim, vocab_size, bias=False)
         self.max_length = max_length
+        self.vocab_size = vocab_size
+
+        # Print model info
+        total_params = sum(p.numel() for p in self.parameters())
+        print(
+            f"{self.__class__.__name__}: {num_layers} layers, {total_params:,} parameters"
+        )
 
     @classmethod
     def from_teacher(cls, teacher, dtype=None, max_length=512):
         config = teacher.model.config
         vocab_size = getattr(config, "vocab_size", 151936)
-        num_layers = min(getattr(config, "num_hidden_layers", 12), 12)
-        hidden_dim = getattr(config, "hidden_size", 1536)
-        num_heads = getattr(config, "num_attention_heads", 12)
+        num_layers = getattr(config, "num_hidden_layers", 12)
+        hidden_dim = max(1, getattr(config, "hidden_size", 1536))
+        num_heads = max(1, getattr(config, "num_attention_heads", 12) // 2) # Reduce number of heads for student
         dropout = 0.1
         device = teacher.device
         dtype = dtype or torch.float32
@@ -141,6 +154,48 @@ class DistilVanillaTransformerStudent(nn.Module):
             logits=logits,
             hidden_states=hidden_states if return_hidden_states else None,
         )
+
+    def generate(
+        self,
+        input_ids,
+        max_new_tokens=16,
+        do_sample=False,
+        eos_token_id=None,
+        pad_token_id=None,
+        **kwargs,
+    ):
+        # Autoregressive generation loop
+        device = next(self.parameters()).device
+        input_ids = input_ids.to(device)
+        batch_size = input_ids.size(0)
+        generated = input_ids.clone()
+        seq_len = generated.size(1)
+        for _ in range(max_new_tokens):
+            # Only use the last max_length tokens for context
+            context = generated[:, -self.max_length :]
+            outputs = self.forward(context)
+            logits = outputs.logits[:, -1, :]  # (batch, vocab)
+            if do_sample:
+                probs = torch.softmax(logits, dim=-1)
+                next_token = torch.multinomial(probs, num_samples=1)
+            else:
+                next_token = torch.argmax(logits, dim=-1, keepdim=True)
+            generated = torch.cat([generated, next_token], dim=1)
+            # Stop if all sequences have produced eos_token_id
+            if eos_token_id is not None:
+                if (next_token == eos_token_id).all():
+                    break
+        # Pad if needed
+        if pad_token_id is not None and generated.size(1) < seq_len + max_new_tokens:
+            pad_len = seq_len + max_new_tokens - generated.size(1)
+            pad = torch.full(
+                (batch_size, pad_len),
+                pad_token_id,
+                dtype=generated.dtype,
+                device=generated.device,
+            )
+            generated = torch.cat([generated, pad], dim=1)
+        return generated
 
 
 """Student Transformer model (Qwen1.5-0.5B architecture, zero-initialized) for distillation."""
