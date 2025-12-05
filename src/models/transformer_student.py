@@ -102,7 +102,7 @@ class DistilVanillaTransformerStudent(nn.Module):
         self.pos_embedding = nn.Parameter(torch.zeros(1, max_length, hidden_dim))
         self.layers = nn.ModuleList(
             [
-                TransformerBlock(hidden_dim, num_heads, mlp_ratio=4, dropout=dropout)
+                TransformerBlock(hidden_dim, num_heads, mlp_ratio=1, dropout=dropout)
                 for _ in range(num_layers)
             ]
         )

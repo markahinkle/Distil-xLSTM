@@ -9,8 +9,7 @@ training:
   num_workers: 0
   teacher_dtype: float16
   student_dtype: float32
-  student_model: lstm
-  transformer_variant: qwen  # or "vanilla"
+  student_model: transformer_vanilla
   dataset:
     dataset_name: HuggingFaceFW/fineweb
     subset: sample-10BT
