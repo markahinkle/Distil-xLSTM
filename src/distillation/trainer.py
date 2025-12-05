@@ -119,7 +119,19 @@ class DistillationTrainer:
         # rely on _evaluate_perplexity's max_batches to limit evaluation cost.
         if isinstance(dataset, IterableDataset):
             train_ds = dataset
-            eval_ds = load_fineweb_stream(self.train_config.dataset)
+
+            eval_config = self.train_config.dataset
+            eval_config.seed += 1
+            # set split to 'test'
+            # eval_config = FineWebStreamConfig(
+            #     dataset_name=eval_config.dataset_name,
+            #     subset=eval_config.subset,
+            #     split="test",
+            #     shuffle_buffer_size=eval_config.shuffle_buffer_size,
+            #     seed=eval_config.seed + 1,  # different seed for eval shuffle
+            #     take=eval_config.take,
+            # )
+            eval_ds = load_fineweb_stream(eval_config, )
 
             train_loader = build_tokenized_dataloader(
                 train_ds,
@@ -360,10 +372,8 @@ class DistillationTrainer:
         self.student.eval()
         total_nll = 0.0
         total_tokens = 0
-        #print(f"Starting perplexity evaluation over max {max_batches} batches")
         with torch.no_grad():
             for i, batch in enumerate(eval_loader):
-                #print(f"eval batch: {i}")
                 if i >= max_batches:
                     break
                 input_ids = batch["input_ids"].to(self.device)
@@ -372,25 +382,11 @@ class DistillationTrainer:
                     attention_mask = attention_mask.to(self.device)
                 labels = batch["labels"].to(self.device)
 
-                outputs = self.student(input_ids, return_hidden_states=False)
+                outputs = self.student(input_ids, attention_mask=attention_mask, return_hidden_states=False)
                 logits = outputs.logits  # (B, L, V)
                 vocab = logits.size(-1)
                 logits_flat = logits.float().view(-1, vocab)
                 labels_flat = labels.view(-1)
-
-                # # handle ignored label sentinel (-100)
-                # mask = labels_flat != -100
-                # if mask.any():
-                #     losses = F.cross_entropy(logits_flat, labels_flat.long(), reduction="none")
-                #     # select valid positions
-                #     valid_losses = losses[mask]
-                #     total_nll += float(valid_losses.sum().item())
-                #     total_tokens += int(mask.sum().item())
-                # else:
-                #     # no -100 sentinel found; sum over all tokens
-                #     loss_sum = F.cross_entropy(logits_flat, labels_flat.long(), reduction="sum")
-                #     total_nll += float(loss_sum.item())
-                #     total_tokens += labels_flat.numel()
 
                 # compute per-token loss and only count non-ignored tokens (ignore_index=-100)
                 losses = F.cross_entropy(logits_flat, labels_flat.long(), reduction="none", ignore_index=-100)
@@ -399,13 +395,14 @@ class DistillationTrainer:
                 valid_count = int(valid_mask.sum().item())
                 total_nll += valid_sum
                 total_tokens += valid_count
-                #print(f"total_nll: {total_nll}, total_tokens: {total_tokens}")
+
 
         if total_tokens == 0:
             print("No valid tokens found for perplexity computation.")
             return None
         avg_nll = total_nll / float(total_tokens)
         perplexity = float(math.exp(min(avg_nll, 100.0)))  # clip to avoid overflow
+        #print(f"Perplexity evaluation result: {perplexity} over {total_tokens} tokens")
         return perplexity
 
     def _record_tensorboard(self, step: int, metrics: dict) -> None:

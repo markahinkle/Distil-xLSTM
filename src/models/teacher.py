@@ -12,7 +12,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 LOGGER = logging.getLogger(__name__)
 
-TEACHER_MODEL_ID = "Qwen/Qwen2.5-1.5B"
+TEACHER_MODEL_ID = "Qwen/Qwen2.5-1.5B"#"HuggingFaceTB/SmolLM-135M"
 
 
 @dataclass

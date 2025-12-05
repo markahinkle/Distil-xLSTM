@@ -18,7 +18,7 @@ LOGGER = logging.getLogger(__name__)
 class FineWebStreamConfig:
     """Configuration for streaming FineWeb."""
 
-    dataset_name: str = "HuggingFaceFW/fineweb"
+    dataset_name: str = "HuggingFaceFW/fineweb-edu"
     subset: Optional[str] = "sample-10BT"
     split: str = "train"
     shuffle_buffer_size: int = 10_000
@@ -38,6 +38,10 @@ def load_fineweb_stream(config: FineWebStreamConfig) -> IterableDataset:
         dataset = load_dataset(config.dataset_name, config.subset, **load_kwargs)
     else:
         dataset = load_dataset(config.dataset_name, **load_kwargs)
+
+    # print("trying train-test split")
+    # splits = dataset.train_test_split(test_size=0.05)
+    # print(f"done: splits = {splits}")
 
     if config.shuffle_buffer_size:
         dataset = dataset.shuffle(seed=config.seed, buffer_size=config.shuffle_buffer_size)
@@ -138,10 +142,13 @@ class TokenizedFineWebIterable(TorchIterableDataset):
         if attention_mask is None:
             attention_mask = torch.ones_like(input_ids)
 
+        labels = input_ids.clone()
+        labels[:, :-1] = input_ids[:, 1:]
+        labels[:, -1] = -100  # ignore last token in loss
         batch = {
             "input_ids": input_ids,
             "attention_mask": attention_mask,
-            "labels": input_ids.clone(),
+            "labels": labels,
         }
         return batch
 

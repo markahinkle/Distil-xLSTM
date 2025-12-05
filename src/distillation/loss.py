@@ -82,7 +82,7 @@ class DeltaDistillationLoss(nn.Module):
         self.config = config
 
         self.ce_loss = nn.CrossEntropyLoss()
-        self.kl_loss = nn.KLDivLoss(reduction="batchmean")
+        self.kl_loss = nn.KLDivLoss(reduction="none")
 
         self.state = DeltaDistillationState(
             alpha_base=config.alpha_initial,
@@ -206,6 +206,7 @@ class DeltaDistillationLoss(nn.Module):
         s_log_probs = F.log_softmax(student_flat.float() / temperature, dim=-1)
         t_probs = F.softmax(teacher_flat.float() / temperature, dim=-1)
         kl = self.kl_loss(s_log_probs, t_probs) * (temperature ** 2)
+        kl = kl.sum(dim=-1).mean()  # sum over vocab, mean over batch and sequence
         return kl
 
     def _frobenius_loss(
