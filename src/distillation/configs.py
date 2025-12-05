@@ -59,7 +59,6 @@ class TrainingConfig:
     teacher_dtype: str = "auto"
     student_dtype: str = "auto"
     student_model: str = "xlstm"
-    transformer_variant: str = "vanilla"
     dataset: FineWebStreamConfig = field(default_factory=FineWebStreamConfig)
     optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
     scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
