@@ -382,7 +382,7 @@ class DistillationTrainer:
                     attention_mask = attention_mask.to(self.device)
                 labels = batch["labels"].to(self.device)
 
-                outputs = self.student(input_ids, attention_mask=attention_mask, return_hidden_states=False)
+                outputs = self.student(input_ids, return_hidden_states=False)
                 logits = outputs.logits  # (B, L, V)
                 vocab = logits.size(-1)
                 logits_flat = logits.float().view(-1, vocab)
