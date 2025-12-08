@@ -237,7 +237,12 @@ class DeltaDistillationLoss(nn.Module):
         frob = torch.linalg.vector_norm(diff)
 
         if self.config.normalize_hidden:
-            denom = math.sqrt(float(diff.numel())) + self.config.eps
+            denom_elements = float(diff.numel())
+            if attention_mask is not None:
+                valid_tokens = float(attention_mask.sum().item())
+                if valid_tokens > 0:
+                    denom_elements = valid_tokens * diff.shape[-1]
+            denom = math.sqrt(denom_elements) + self.config.eps
             frob = frob / denom
 
         return frob
