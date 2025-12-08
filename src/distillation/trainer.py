@@ -300,16 +300,15 @@ class DistillationTrainer:
         for idx, hidden in enumerate(teacher_outputs.hidden_states):
             self._check_tensor(f"teacher_hidden_{idx}", hidden)
 
-            distill_output = self.loss_fn(
-                student_logits=student_outputs.logits,
-                teacher_logits=teacher_outputs.logits,
-                labels=labels,
-                student_hidden=hidden_states,
-                teacher_hidden=teacher_outputs.hidden_states,
-                attention_mask=attention_mask,
-            )
-
-            loss = distill_output.total / accumulation
+        distill_output = self.loss_fn(
+            student_logits=student_outputs.logits,
+            teacher_logits=teacher_outputs.logits,
+            labels=labels,
+            student_hidden=hidden_states,
+            teacher_hidden=teacher_outputs.hidden_states,
+            attention_mask=attention_mask,
+        )
+        loss = distill_output.total / accumulation
 
         if torch.isnan(distill_output.total) or torch.isinf(distill_output.total):
             LOGGER.error(
