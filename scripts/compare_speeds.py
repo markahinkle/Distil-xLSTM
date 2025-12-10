@@ -13,9 +13,8 @@ if str(PROJECT_ROOT) not in sys.path:
 
 # Specify which models to compare
 models_compared = [
-    "transformer_qwen",
     "transformer_vanilla",
-    # "mamba",
+    "mamba",
     "lstm",
     "xlstm",
     # add more if needed

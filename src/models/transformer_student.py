@@ -57,7 +57,7 @@ class DistilQwenTransformerStudent(nn.Module):
 
 # Vanilla transformer block
 class TransformerBlock(nn.Module):
-    def __init__(self, dim, num_heads, mlp_ratio=4, dropout=0.1):
+    def __init__(self, dim, num_heads, mlp_ratio=1, dropout=0.1):
         super().__init__()
         self.norm1 = nn.LayerNorm(dim)
         self.attn = nn.MultiheadAttention(
@@ -65,10 +65,10 @@ class TransformerBlock(nn.Module):
         )
         self.norm2 = nn.LayerNorm(dim)
         self.mlp = nn.Sequential(
-            nn.Linear(dim, mlp_ratio * dim),
+            nn.Linear(dim, int(mlp_ratio * dim)),
             nn.GELU(),
             nn.Dropout(dropout),
-            nn.Linear(mlp_ratio * dim, dim),
+            nn.Linear(int(mlp_ratio * dim), dim),
             nn.Dropout(dropout),
         )
         self.dropout = nn.Dropout(dropout)
@@ -94,6 +94,7 @@ class DistilVanillaTransformerStudent(nn.Module):
         num_heads=12,
         max_length=512,
         dropout=0.1,
+        mlp_ratio=1,
         device=None,
         dtype=None,
     ):
@@ -102,7 +103,7 @@ class DistilVanillaTransformerStudent(nn.Module):
         self.pos_embedding = nn.Parameter(torch.zeros(1, max_length, hidden_dim))
         self.layers = nn.ModuleList(
             [
-                TransformerBlock(hidden_dim, num_heads, mlp_ratio=1, dropout=dropout)
+                TransformerBlock(hidden_dim, num_heads, mlp_ratio=mlp_ratio, dropout=dropout)
                 for _ in range(num_layers)
             ]
         )
@@ -124,6 +125,7 @@ class DistilVanillaTransformerStudent(nn.Module):
         num_layers = getattr(config, "num_hidden_layers", 12)
         hidden_dim = max(1, getattr(config, "hidden_size", 1536))
         num_heads = max(1, getattr(config, "num_attention_heads", 12) // 2) # Reduce number of heads for student
+        mlp_ratio = 1
         dropout = 0.1
         device = teacher.device
         dtype = dtype or torch.float32
@@ -134,6 +136,7 @@ class DistilVanillaTransformerStudent(nn.Module):
             num_heads=num_heads,
             max_length=max_length,
             dropout=dropout,
+            mlp_ratio=mlp_ratio,
             device=device,
             dtype=dtype,
         ).to(device=device, dtype=dtype)
