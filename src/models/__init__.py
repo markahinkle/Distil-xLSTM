@@ -1,3 +1,7 @@
+from .transformer_student import (
+    DistilQwenTransformerStudent,
+    DistilVanillaTransformerStudent,
+)
 from .student import (
     DistilXLSTMStudent,
     StudentArchitectureSpec,
@@ -30,8 +34,10 @@ try:
         build_mamba_student_spec_from_teacher,
     )
 except ImportError:
-    print("Mamba student model could not be imported. Ensure all dependencies are installed.")
-    
+    print(
+        "Mamba student model could not be imported. Ensure all dependencies are installed."
+    )
+
 
 __all__ = [
     "DistilXLSTMStudent",
@@ -50,4 +56,7 @@ __all__ = [
     "run_xlstm_smoke_test",
     "DistilLSTMStudent",
     "build_lstm_student_spec_from_teacher",
+    "DistilQwenTransformerStudent",
+    "DistilVanillaTransformerStudent",
+    "build_mamba_student_spec_from_teacher",
 ]

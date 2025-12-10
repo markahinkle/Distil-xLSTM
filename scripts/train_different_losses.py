@@ -31,6 +31,14 @@ except ImportError:
     DistilMambaStudent = None
     build_mamba_student_spec_from_teacher = None
 
+# Add transformer imports
+from src.models.transformer_student import (
+    load_transformer_student,
+    TransformerStudentResources,
+    DistilQwenTransformerStudent,
+    DistilVanillaTransformerStudent,
+)
+
 from src.utils import load_training_config
 
 LOGGER = logging.getLogger("scripts.train_different_losses")
@@ -136,6 +144,7 @@ def main():
         train_cfg.checkpoint.output_dir = checkpoints_dir
 
         # Build student instance (mirror logic from scripts/train.py)
+        spec = None
         if student_class == "xlstm":
             spec = build_student_spec_from_teacher(teacher, context_length=train_cfg.max_length)
             student = DistilXLSTMStudent.from_teacher(teacher, spec=spec, dtype=student_dtype)
@@ -147,10 +156,19 @@ def main():
                 raise ImportError("Mamba student model not available in this environment")
             spec = build_mamba_student_spec_from_teacher(teacher, context_length=train_cfg.max_length)
             student = DistilMambaStudent.from_teacher(teacher, spec=spec, dtype=student_dtype)  # type: ignore
+        elif student_class == "transformer_qwen":
+            student = DistilQwenTransformerStudent.from_teacher(teacher, dtype=student_dtype)
+        elif student_class == "transformer_vanilla":
+            student = DistilVanillaTransformerStudent.from_teacher(
+                teacher,
+                dtype=student_dtype,
+                max_length=train_cfg.max_length,
+            )
         else:
             raise ValueError(f"Unrecognized student class '{student_class}'")
 
-        LOGGER.info("Using student spec: %s", spec)
+        if spec is not None:
+            LOGGER.info("Using student spec: %s", spec)
 
         trainer = DistillationTrainer(
             teacher,

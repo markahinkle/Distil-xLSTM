@@ -22,13 +22,34 @@ from src.models import (
     build_lstm_student_spec_from_teacher,
     load_teacher_model,
 )
+
 try:
     from src.models import (
         DistilMambaStudent,
         build_mamba_student_spec_from_teacher,
     )
 except ImportError:
-    print("Mamba student model could not be imported. Ensure all dependencies are installed.")
+    print(
+        "Mamba student model could not be imported. Ensure all dependencies are installed."
+    )
+
+# Add transformer imports
+from src.models.transformer_student import (
+    load_transformer_student,
+    TransformerStudentResources,
+    DistilQwenTransformerStudent,
+    DistilVanillaTransformerStudent,
+)
+
+try:
+    from src.models import (
+        DistilMambaStudent,
+        build_mamba_student_spec_from_teacher,
+    )
+except ImportError:
+    print(
+        "Mamba student model could not be imported. Ensure all dependencies are installed."
+    )
 
 from src.utils import load_training_config
 from src.utils.report import generate_report
@@ -70,7 +91,9 @@ def _resolve_dtype(name: str):
         "bf16": torch.bfloat16,
     }
     if name not in mapping:
-        raise ValueError(f"Unrecognized dtype '{name}'. Valid options: {list(mapping.keys()) + ['auto']}")
+        raise ValueError(
+            f"Unrecognized dtype '{name}'. Valid options: {list(mapping.keys()) + ['auto']}"
+        )
     return mapping[name]
 
 
@@ -79,38 +102,100 @@ def main() -> None:
     args = parse_args()
 
     training_config, loss_config = load_training_config(args.config)
+    import datetime
+
     output_dir = args.output_dir
-    if output_dir.exists():
-        shutil.rmtree(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    tensorboard_dir = output_dir / "tensorboard"
-    metrics_path = output_dir / "metrics.jsonl"
-    checkpoints_dir = output_dir / "checkpoints"
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_dir = output_dir / timestamp
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    tensorboard_dir = run_dir / "tensorboard"
+    metrics_path = run_dir / "metrics.jsonl"
+    checkpoints_dir = run_dir / "checkpoints"
 
     training_config.logging.tensorboard_dir = tensorboard_dir
     training_config.logging.metrics_path = metrics_path
     training_config.checkpoint.output_dir = checkpoints_dir
     teacher_dtype = _resolve_dtype(training_config.teacher_dtype)
+
     teacher = load_teacher_model(dtype=teacher_dtype)
     tokenizer = teacher.tokenizer
 
-    student_dtype = _resolve_dtype(training_config.student_dtype)
-    student_class = training_config.student_model.lower() # "xlstm", "lstm", or "mamba"
+    # Print teacher model info
+    teacher_layers = getattr(teacher.model.config, "num_hidden_layers", "N/A")
+    teacher_params = sum(p.numel() for p in teacher.model.parameters())
+    print(f"Teacher: {teacher_layers} layers, {teacher_params:,} parameters")
 
+    student_dtype = _resolve_dtype(training_config.student_dtype)
+
+    student_class = (
+        training_config.student_model.lower()
+    )  # "xlstm", "lstm", "mamba", "transformer_qwen" or "transformer_vanilla"
+    spec = None
     if student_class == "xlstm":
-        spec = build_student_spec_from_teacher(teacher, context_length=training_config.max_length)
-        student = DistilXLSTMStudent.from_teacher(teacher, spec=spec, dtype=student_dtype)
+        spec = build_student_spec_from_teacher(
+            teacher, context_length=training_config.max_length
+        )
+        student = DistilXLSTMStudent.from_teacher(
+            teacher, spec=spec, dtype=student_dtype
+        )
+        student_layers = getattr(student.stack_config, "num_blocks", "N/A")
+        student_total_params = student.num_parameters()
+        student_trainable_params = student.num_parameters(trainable_only=True)
+        print(
+            f"Student: {student_layers} blocks, {student_total_params:,} total parameters, {student_trainable_params:,} trainable ({100.0 * student_trainable_params / student_total_params:.2f}% trainable)"
+        )
     elif student_class == "lstm":
-        spec = build_lstm_student_spec_from_teacher(teacher, context_length=training_config.max_length)
-        student = DistilLSTMStudent.from_teacher(teacher, spec=spec, dtype=student_dtype)
+        spec = build_lstm_student_spec_from_teacher(
+            teacher, context_length=training_config.max_length
+        )
+        student = DistilLSTMStudent.from_teacher(
+            teacher, spec=spec, dtype=student_dtype
+        )
     elif student_class == "mamba":
-        spec = build_mamba_student_spec_from_teacher(teacher, context_length=training_config.max_length)
-        student = DistilMambaStudent.from_teacher(teacher, spec=spec, dtype=student_dtype)
+        spec = build_mamba_student_spec_from_teacher(
+            teacher, context_length=training_config.max_length
+        )
+        student = DistilMambaStudent.from_teacher(
+            teacher, spec=spec, dtype=student_dtype
+        )
+    elif student_class == "transformer_qwen":
+        student = DistilQwenTransformerStudent.from_teacher(
+            teacher, dtype=student_dtype
+        )
+        student_layers = getattr(student.config, "num_hidden_layers", "N/A")
+        student_total_params = sum(p.numel() for p in student.parameters())
+        student_trainable_params = sum(
+            p.numel() for p in student.parameters() if p.requires_grad
+        )
+        print(
+            f"Student: {student_layers} layers, {student_total_params:,} total parameters, {student_trainable_params:,} trainable ({100.0 * student_trainable_params / student_total_params:.2f}% trainable)"
+        )
+    elif student_class == "transformer_vanilla":
+        student = DistilVanillaTransformerStudent.from_teacher(
+            teacher,
+            dtype=student_dtype,
+            max_length=training_config.max_length,
+        )
+        student_layers = getattr(student, "layers", None)
+        if student_layers:
+            student_layers = len(student_layers)
+        else:
+            student_layers = "N/A"
+        student_total_params = sum(p.numel() for p in student.parameters())
+        student_trainable_params = sum(
+            p.numel() for p in student.parameters() if p.requires_grad
+        )
+        print(
+            f"Student: {student_layers} layers, {student_total_params:,} total parameters, {student_trainable_params:,} trainable ({100.0 * student_trainable_params / student_total_params:.2f}% trainable)"
+        )
     else:
         raise ValueError(f"Unrecognized student class '{student_class}'")
-    
-    LOGGER.info("Using student spec: %s", spec)
+
+    if spec is not None:
+        LOGGER.info("Using student spec: %s", spec)
 
     trainer = DistillationTrainer(
         teacher,
@@ -125,7 +210,9 @@ def main() -> None:
 
     if args.report:
         generated = generate_report(metrics_path, output_dir)
-        LOGGER.info("Generated report artifacts: %s", {k: str(v) for k, v in generated.items()})
+        LOGGER.info(
+            "Generated report artifacts: %s", {k: str(v) for k, v in generated.items()}
+        )
 
 
 if __name__ == "__main__":

@@ -162,6 +162,13 @@ class DistilMambaStudent(nn.Module):
         self.embedding.weight.requires_grad = not freeze_embeddings
         self.lm_head.weight.requires_grad = not freeze_lm_head
 
+        # Print model info
+        num_layers = spec.num_layers
+        total_params = sum(p.numel() for p in self.parameters())
+        print(
+            f"{self.__class__.__name__}: {num_layers} layers, {total_params:,} parameters"
+        )
+
     @classmethod
     def from_teacher(
         cls,
