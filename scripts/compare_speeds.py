@@ -21,9 +21,9 @@ models_compared = [
 ]
 
 # Prompt and test settings
-prompt = "The quick brown fox jumps over the lazy dog. And what about you? How do you feel about this random text? Isn't it too long for you? The quick brown fox jumps over the lazy dog. And what about you? How do you feel about this random text? Isn't it too long for you?"
+prompt = "The quick brown fox jumps over the lazy dog. What happened next?"
 num_runs = 12 # because we delete the first two warmup runs!!!
-max_new_tokens = 16
+max_new_tokens = 100
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 dtype = torch.float32
 
@@ -93,14 +93,20 @@ def measure_inference_speed(model, tokenizer, prompt, max_new_tokens, num_runs):
                     max_new_tokens=max_new_tokens,
                     do_sample=False,
                 )
+                # Calculate number of generated tokens
+                if hasattr(output, "shape"):
+                    num_generated = output.shape[-1] - inputs["input_ids"].shape[-1]
+                else:
+                    num_generated = max_new_tokens
             else:
                 output = model(inputs["input_ids"])
+                num_generated = output.shape[-1] if hasattr(output, "shape") else max_new_tokens
         end = time.time()
         elapsed = end - start
         # Divide by number of generated tokens for fair comparison
         time_per_token = elapsed / max_new_tokens
+        print(f"Run {run_idx+1}/{num_runs}: {elapsed:.4f}s ({time_per_token:.6f}s/token), tokens generated: {num_generated}")
         times.append(time_per_token)
-        print(f"Run {run_idx+1}/{num_runs}: {elapsed:.4f}s ({time_per_token:.6f}s/token)")
     # Remove the first timed run from statistics
     return times[2:]
 
