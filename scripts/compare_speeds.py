@@ -25,6 +25,7 @@ prompt = "The quick brown fox jumps over the lazy dog. What happened next?"
 num_runs = 12 # because we delete the first two warmup runs!!!
 max_new_tokens = 100
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+logarithmic = False  # Set to False for linear scale
 dtype = torch.float32
 
 # Load teacher model (always needed)
@@ -134,6 +135,8 @@ plt.boxplot(data, labels=[m for m in models_compared if m in results])
 plt.ylabel("Inference Time per Token (seconds)")
 plt.title("Student Model Inference Speed per Token Comparison")
 plt.grid(True)
+if logarithmic:
+    plt.yscale("log")
 plt.tight_layout()
 plot_path = Path(__file__).parent / "inference_speed_comparison.png"
 plt.savefig(plot_path)
