@@ -11,6 +11,12 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
 
+from src.distillation.projection import (
+    HiddenStateProjector,
+    ProjectionConfig,
+    ProjectionMetrics,
+)
+
 
 @dataclass
 class DeltaDistillationConfig:
@@ -26,10 +32,19 @@ class DeltaDistillationConfig:
     normalize_hidden: bool = True
     eps: float = 1e-8
 
-    # New flags to enable/disable loss components
+    # Loss component flags
     use_ce: bool = True
     use_kl: bool = True
     use_frobenius: bool = True
+    
+    # Projection settings for feature-based alignment
+    use_projection: bool = False
+    projection_loss_type: str = "cosine"
+    projection_layer_strategy: str = "last"
+    projection_num_teacher_layers: int = 4
+    projection_normalize: bool = True
+    projection_dropout: float = 0.1
+    projection_use_layer_norm: bool = True
 
     def clamp(self) -> None:
         self.alpha_initial = float(self.alpha_initial)
@@ -71,12 +86,21 @@ class DistillationLossOutput:
     frobenius: Tensor
     alpha: float
     temperature: float
+    projection_metrics: Optional[ProjectionMetrics] = None
 
 
 class DeltaDistillationLoss(nn.Module):
-    """Implements ∆-distillation with KL + CE + Frobenius components."""
+    """Implements ∆-distillation with KL + CE + Frobenius/Projection components."""
 
-    def __init__(self, config: DeltaDistillationConfig) -> None:
+    def __init__(
+        self,
+        config: DeltaDistillationConfig,
+        *,
+        student_dim: Optional[int] = None,
+        teacher_dim: Optional[int] = None,
+        device: Optional[torch.device] = None,
+        dtype: Optional[torch.dtype] = None,
+    ) -> None:
         super().__init__()
         config.clamp()
         self.config = config
@@ -88,6 +112,24 @@ class DeltaDistillationLoss(nn.Module):
             alpha_base=config.alpha_initial,
             temperature_base=config.temperature_initial,
         )
+        
+        # Initialize projector if enabled
+        self.projector: Optional[HiddenStateProjector] = None
+        self._last_projection_metrics: Optional[ProjectionMetrics] = None
+        
+        if config.use_projection and student_dim is not None and teacher_dim is not None:
+            proj_config = ProjectionConfig(
+                enabled=True,
+                student_dim=student_dim,
+                teacher_dim=teacher_dim,
+                loss_type=config.projection_loss_type,
+                layer_strategy=config.projection_layer_strategy,
+                num_teacher_layers=config.projection_num_teacher_layers,
+                normalize_before_loss=config.projection_normalize,
+                projection_dropout=config.projection_dropout,
+                use_layer_norm=config.projection_use_layer_norm,
+            )
+            self.projector = HiddenStateProjector(proj_config, device=device, dtype=dtype)
 
     def current_alpha(self) -> float:
         return self._log_schedule(
@@ -146,7 +188,7 @@ class DeltaDistillationLoss(nn.Module):
         if self.config.use_kl:
             kl = self._kl_divergence(student_logits, teacher_logits, temperature)
         if self.config.use_frobenius:
-            frob = self._frobenius_loss(
+            frob = self._hidden_alignment_loss(
                 student_hidden,
                 teacher_hidden,
                 attention_mask=attention_mask,
@@ -186,7 +228,34 @@ class DeltaDistillationLoss(nn.Module):
             frobenius=frob.detach(),
             alpha=alpha,
             temperature=temperature,
+            projection_metrics=self._last_projection_metrics,
         )
+
+    def _hidden_alignment_loss(
+        self,
+        student_hidden: Optional[Tensor],
+        teacher_hidden: Optional[Sequence[Tensor]],
+        *,
+        attention_mask: Optional[Tensor] = None,
+    ) -> Tensor:
+        """Compute hidden state alignment loss using projection or legacy Frobenius."""
+        if student_hidden is None or teacher_hidden is None:
+            device = student_hidden.device if student_hidden is not None else teacher_hidden[0].device  # type: ignore
+            return torch.tensor(0.0, device=device)
+        
+        # Use projection if available
+        if self.projector is not None:
+            loss, metrics = self.projector(
+                student_hidden,
+                teacher_hidden,
+                attention_mask=attention_mask,
+                return_metrics=True,
+            )
+            self._last_projection_metrics = metrics
+            return loss
+        
+        # Fallback to legacy Frobenius
+        return self._frobenius_loss(student_hidden, teacher_hidden, attention_mask=attention_mask)
 
     def _cross_entropy(self, logits: Tensor, labels: Tensor) -> Tensor:
         vocab = logits.size(-1)

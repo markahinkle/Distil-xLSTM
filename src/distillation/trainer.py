@@ -56,8 +56,18 @@ class DistillationTrainer:
         self.tokenizer = tokenizer
         self.device = teacher.device
         self.train_config = train_config
-        self.loss_fn = DeltaDistillationLoss(loss_config)
         self.output_dir = Path(output_dir)
+        
+        # Auto-detect dimensions for projection
+        student_dim = getattr(student.embedding, "embedding_dim", None)
+        teacher_dim = getattr(teacher.model.config, "hidden_size", None)
+        
+        self.loss_fn = DeltaDistillationLoss(
+            loss_config,
+            student_dim=student_dim,
+            teacher_dim=teacher_dim,
+            device=self.device,
+        )
 
         scaler_device = "cuda" if torch.cuda.is_available() else "cpu"
         self.scaler = GradScaler(scaler_device, enabled=self._use_amp)
@@ -69,7 +79,13 @@ class DistillationTrainer:
         if train_config.logging.metrics_path is not None:
             self.metrics_logger = MetricsLogger(Path(train_config.logging.metrics_path))
 
+        # Collect trainable params from student and projector (if present)
         self.trainable_params = [p for p in student.parameters() if p.requires_grad]
+        if self.loss_fn.projector is not None:
+            self.trainable_params.extend(
+                p for p in self.loss_fn.projector.parameters() if p.requires_grad
+            )
+        
         self.optimizer = torch.optim.AdamW(
             self.trainable_params,
             lr=train_config.optimizer.learning_rate,
@@ -364,6 +380,13 @@ class DistillationTrainer:
             metrics["grad_norm"] = _safe(grad_norm)
         if gpu_mem_mb is not None:
             metrics["gpu_memory_mb"] = float(gpu_mem_mb)
+        
+        # Add projection metrics if available
+        if distill_output.projection_metrics is not None:
+            pm = distill_output.projection_metrics
+            metrics["projection_cosine_sim"] = pm.cosine_similarity
+            metrics["projection_alignment_ratio"] = pm.alignment_ratio
+        
         return metrics
 
     def _evaluate_perplexity(self, eval_loader, *, max_batches: int = 10) -> float:
@@ -420,6 +443,11 @@ class DistillationTrainer:
             self.writer.add_scalar("train/gpu_memory_mb", metrics["gpu_memory_mb"], step)
         if "perplexity" in metrics and metrics["perplexity"] is not None:
             self.writer.add_scalar("eval/perplexity", metrics["perplexity"], step)
+        # Projection metrics
+        if "projection_cosine_sim" in metrics:
+            self.writer.add_scalar("train/projection_cosine_sim", metrics["projection_cosine_sim"], step)
+        if "projection_alignment_ratio" in metrics:
+            self.writer.add_scalar("train/projection_alignment_ratio", metrics["projection_alignment_ratio"], step)
 
     @staticmethod
     def _print_metrics(step: int, metrics: dict) -> None:

@@ -11,6 +11,13 @@ from .loss import (
     DeltaDistillationState,
     DistillationLossOutput,
 )
+from .projection import (
+    HiddenStateProjector,
+    ProjectionConfig,
+    ProjectionMetrics,
+    ProjectionLossType,
+    TeacherLayerStrategy,
+)
 from .trainer import DistillationTrainer
 
 __all__ = [
@@ -24,4 +31,9 @@ __all__ = [
     "OptimizerConfig",
     "SchedulerConfig",
     "TrainingConfig",
+    "HiddenStateProjector",
+    "ProjectionConfig",
+    "ProjectionMetrics",
+    "ProjectionLossType",
+    "TeacherLayerStrategy",
 ]

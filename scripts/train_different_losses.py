@@ -131,7 +131,16 @@ def main():
         loss_config = deepcopy(base_loss_config)
         loss_config.use_ce = bool(flags.get("use_ce", True))
         loss_config.use_kl = bool(flags.get("use_kl", True))
-        loss_config.use_frobenius = bool(flags.get("use_frobenius", True))
+        loss_config.use_frobenius = bool(flags.get("use_frobenius", False))
+        
+        # Projection settings
+        loss_config.use_projection = bool(flags.get("use_projection", False))
+        if "projection_loss_type" in flags:
+            loss_config.projection_loss_type = flags["projection_loss_type"]
+        if "projection_layer_strategy" in flags:
+            loss_config.projection_layer_strategy = flags["projection_layer_strategy"]
+        if "projection_num_teacher_layers" in flags:
+            loss_config.projection_num_teacher_layers = flags["projection_num_teacher_layers"]
 
         train_cfg = deepcopy(training_config)
         # wire per-run artifact locations
